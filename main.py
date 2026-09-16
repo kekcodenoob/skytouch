@@ -1,141 +1,190 @@
 import cv2
-import math
-import numpy as np
 import mediapipe as mp
+from gestures import GestureRecognizer
+from canvas import CanvasManager
 
-# Initialize MediaPipe Hands
-mp_hands = mp.solutions.hands
-mp_drawing = mp.solutions.drawing_utils
+class SkytouchApp:
+    def __init__(self, width=1280, height=720):
+        self.width = width
+        self.height = height
 
-hands = mp_hands.Hands(
-    static_image_mode=False,
-    max_num_hands=1,
-    min_detection_confidence=0.7,
-    min_tracking_confidence=0.7
-)
+        self.mp_hands = mp.solutions.hands
+        self.mp_drawing = mp.solutions.drawing_utils
+        self.hands = self.mp_hands.Hands(
+            static_image_mode=False,
+            max_num_hands=2,
+            min_detection_confidence=0.8,
+            min_tracking_confidence=0.8
+        )
 
-# Webcam Setup
-cap = cv2.VideoCapture(0)
-cap.set(3, 1280)
-cap.set(4, 720)
+        self.recognizer = GestureRecognizer()
+        self.canvas_mgr = CanvasManager(width, height)
 
-# Canvas & State Variables
-canvas = None
-colors = [(0, 0, 255), (0, 255, 0), (255, 0, 0), (0, 255, 255)] # BGR: Red, Green, Blue, Yellow
-color_index = 0
-drawing_mode = "line"  # Options: "line", "circle", "rectangle"
+        self.colors = [(0, 0, 255), (0, 255, 0), (255, 0, 0), (0, 255, 255)]
+        self.color_index = 0
+        self.modes = ["line", "circle", "rectangle"]
+        self.mode_index = 0
 
-px, py = 0, 0          # Previous finger coordinates
-start_x, start_y = 0, 0 # Shape start coordinates
-color_cooldown = 0
-mode_cooldown = 0
+        self.px, self.py = 0, 0
+        self.is_pinching = False
+        self.pinch_start_pt = None
+        self.clear_counter = 0
 
-def calculate_distance(p1, p2):
-    return math.hypot(p2[0] - p1[0], p2[1] - p1[1])
+        self.color_cooldown = 0
+        self.mode_cooldown = 0
+        self.pointing_frame_count = 0
 
-print("Gesture Controls:")
-print(" - Point Index Finger: Draw / Position Shapes")
-print(" - Pinch Thumb + Index: Change Color")
-print(" - Pinch Thumb + Middle: Toggle Mode (Line -> Circle -> Rectangle)")
-print(" - Open Hand (All Fingers): Clear Canvas")
-print(" - Press 'q': Exit")
+        # Viewport Filter State
+        self.active_filter_index = 0
+        self.was_two_hands = False
 
-while cap.isOpened():
-    success, frame = cap.read()
-    if not success:
-        continue
+    def run(self):
+        cap = cv2.VideoCapture(0)
+        cap.set(3, self.width)
+        cap.set(4, self.height)
 
-    frame = cv2.flip(frame, 1)
-    h, w, _ = frame.shape
+        while cap.isOpened():
+            success, frame = cap.read()
+            if not success:
+                continue
 
-    if canvas is None:
-        canvas = np.zeros((h, w, 3), dtype=np.uint8)
+            frame = cv2.flip(frame, 1)
+            preview_layer = frame.copy()
 
-    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    results = hands.process(rgb_frame)
+            if self.color_cooldown > 0: self.color_cooldown -= 1
+            if self.mode_cooldown > 0: self.mode_cooldown -= 1
 
-    if color_cooldown > 0: color_cooldown -= 1
-    if mode_cooldown > 0: mode_cooldown -= 1
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results = self.hands.process(rgb_frame)
 
-    if results.multi_hand_landmarks:
-        for hand_landmarks in results.multi_hand_landmarks:
-            # Extract Key Landmark Positions (x, y pixels)
-            landmarks = hand_landmarks.landmark
-            
-            thumb_tip = (int(landmarks[4].x * w), int(landmarks[4].y * h))
-            index_tip = (int(landmarks[8].x * w), int(landmarks[8].y * h))
-            middle_tip = (int(landmarks[12].x * w), int(landmarks[12].y * h))
-            
-            # Check raised status of fingers
-            index_up = landmarks[8].y < landmarks[6].y
-            middle_up = landmarks[12].y < landmarks[10].y
-            ring_up = landmarks[16].y < landmarks[14].y
-            pinky_up = landmarks[20].y < landmarks[18].y
+            clear_progress = 0.0
 
-            # 1. Clear Canvas: Open Hand (All main fingers up)
-            if index_up and middle_up and ring_up and pinky_up:
-                canvas = np.zeros((h, w, 3), dtype=np.uint8)
-                px, py = 0, 0
+            if results.multi_hand_landmarks:
+                num_hands = len(results.multi_hand_landmarks)
 
-            # 2. Pinch Thumb + Index -> Cycle Colors
-            elif calculate_distance(thumb_tip, index_tip) < 30 and color_cooldown == 0:
-                color_index = (color_index + 1) % len(colors)
-                color_cooldown = 15  # Prevent rapid switching
-                px, py = 0, 0
+                for hand_landmarks in results.multi_hand_landmarks:
+                    self.mp_drawing.draw_landmarks(frame, hand_landmarks, self.mp_hands.HAND_CONNECTIONS)
 
-            # 3. Pinch Thumb + Middle -> Switch Mode (Line / Circle / Rectangle)
-            elif calculate_distance(thumb_tip, middle_tip) < 30 and mode_cooldown == 0:
-                if drawing_mode == "line":
-                    drawing_mode = "circle"
-                elif drawing_mode == "circle":
-                    drawing_mode = "rectangle"
-                else:
-                    drawing_mode = "line"
-                mode_cooldown = 15
-                px, py = 0, 0
+                # --- TWO HAND MODE ---
+                if num_hands == 2:
+                    # Cycle to the next filter when viewport is freshly spawned
+                    if not self.was_two_hands:
+                        self.active_filter_index += 1
+                        self.was_two_hands = True
 
-            # 4. Drawing Logic (Only Index Finger Up)
-            elif index_up and not middle_up:
-                current_color = colors[color_index]
-                
-                if drawing_mode == "line":
-                    if px == 0 and py == 0:
-                        px, py = index_tip
-                    cv2.line(canvas, (px, py), index_tip, current_color, 8)
-                    px, py = index_tip
+                    left_hand, right_hand = self.recognizer.sort_two_hands(results.multi_hand_landmarks)
+                    lh = left_hand.landmark
+                    rh = right_hand.landmark
 
-                elif drawing_mode == "circle":
-                    cv2.circle(canvas, index_tip, 25, current_color, -1)
-                    px, py = 0, 0
+                    p1 = (int(lh[self.mp_hands.HandLandmark.INDEX_FINGER_TIP].x * self.width),
+                          int(lh[self.mp_hands.HandLandmark.INDEX_FINGER_TIP].y * self.height))
+                    p2 = (int(lh[self.mp_hands.HandLandmark.THUMB_TIP].x * self.width),
+                          int(lh[self.mp_hands.HandLandmark.THUMB_TIP].y * self.height))
+                    p3 = (int(rh[self.mp_hands.HandLandmark.INDEX_FINGER_TIP].x * self.width),
+                          int(rh[self.mp_hands.HandLandmark.INDEX_FINGER_TIP].y * self.height))
+                    p4 = (int(rh[self.mp_hands.HandLandmark.THUMB_TIP].x * self.width),
+                          int(rh[self.mp_hands.HandLandmark.THUMB_TIP].y * self.height))
 
-                elif drawing_mode == "rectangle":
-                    cv2.rectangle(canvas, (index_tip[0] - 25, index_tip[1] - 25),
-                                  (index_tip[0] + 25, index_tip[1] + 25), current_color, -1)
-                    px, py = 0, 0
+                    frame = self.canvas_mgr.apply_viewport_filter(frame, p1, p2, p3, p4, self.active_filter_index)
+
+                # --- SINGLE HAND MODE ---
+                elif num_hands == 1:
+                    self.was_two_hands = False  # Reset spawn flag
+                    data = self.recognizer.parse_hand_data(results.multi_hand_landmarks[0], self.width, self.height)
+                    current_color = self.colors[self.color_index]
+                    current_mode = self.modes[self.mode_index]
+
+                    is_pinching_now = not data['is_fist'] and ((data['pinch_ratio'] < 0.18) or (self.is_pinching and data['pinch_ratio'] < 0.28))
+
+                    # 1. Fist: Clear Canvas with status percentage tip
+                    if data['is_fist']:
+                        self.pointing_frame_count = 0
+                        self.is_pinching = False
+                        self.pinch_start_pt = None
+                        self.clear_counter += 1
+                        
+                        clear_progress = min(1.0, self.clear_counter / 30.0)
+
+                        if self.clear_counter >= 30:
+                            self.canvas_mgr.clear()
+                            self.px, self.py = 0, 0
+                            self.clear_counter = 0
+
+                    # 2. Pinch: Drag preview shape
+                    elif is_pinching_now:
+                        self.pointing_frame_count = 0
+                        self.clear_counter = 0
+                        self.px, self.py = 0, 0
+
+                        if not self.is_pinching:
+                            self.is_pinching = True
+                            self.pinch_start_pt = data['index_tip']
+
+                        x1, y1 = self.pinch_start_pt
+                        x2, y2 = data['index_tip']
+                        if current_mode == "rectangle":
+                            cv2.rectangle(preview_layer, (x1, y1), (x2, y2), current_color, 3)
+                        else:
+                            cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+                            ax, ay = abs(x2 - x1) // 2, abs(y2 - y1) // 2
+                            if ax > 0 and ay > 0:
+                                cv2.ellipse(preview_layer, (cx, cy), (ax, ay), 0, 0, 360, current_color, 3)
+
+                    # 3. Pinch release: Commit shape
+                    elif self.is_pinching:
+                        self.pointing_frame_count = 0
+                        self.clear_counter = 0
+                        self.canvas_mgr.commit_drag_shape(current_mode, self.pinch_start_pt, data['index_tip'], current_color)
+                        self.is_pinching = False
+                        self.pinch_start_pt = None
+
+                    # 4. Color Swap
+                    elif data['index_up'] and data['pinky_up'] and not data['middle_up'] and not data['ring_up'] and self.color_cooldown == 0:
+                        self.pointing_frame_count = 0
+                        self.clear_counter = 0
+                        self.color_index = (self.color_index + 1) % len(self.colors)
+                        self.color_cooldown = 20
+
+                    # 5. Mode Swap
+                    elif data['index_up'] and data['middle_up'] and not data['ring_up'] and not data['pinky_up'] and self.mode_cooldown == 0:
+                        self.pointing_frame_count = 0
+                        self.clear_counter = 0
+                        self.mode_index = (self.mode_index + 1) % len(self.modes)
+                        self.mode_cooldown = 20
+                        self.px, self.py = 0, 0
+
+                    # 6. Freehand Drawing
+                    elif data['index_up'] and not data['middle_up'] and not data['ring_up'] and not data['pinky_up']:
+                        self.clear_counter = 0
+                        self.pointing_frame_count += 1
+                        if self.pointing_frame_count >= 2:
+                            if current_mode == "line":
+                                if self.px == 0 and self.py == 0:
+                                    self.px, self.py = data['index_tip']
+                                self.canvas_mgr.draw_line((self.px, self.py), data['index_tip'], current_color)
+                                self.px, self.py = data['index_tip']
+                            else:
+                                self.canvas_mgr.draw_shape_stamp(current_mode, data['index_tip'], current_color)
+                                self.px, self.py = 0, 0
+                    else:
+                        self.pointing_frame_count = 0
+                        self.clear_counter = 0
+                        self.px, self.py = 0, 0
+
             else:
-                px, py = 0, 0
+                self.was_two_hands = False  # Reset when no hands are in view
 
-            # Draw Hand Skeleton on Frame
-            mp_drawing.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
+            # Render output
+            final_frame = self.canvas_mgr.merge_layers(frame, preview_layer)
+            self.canvas_mgr.draw_hud(final_frame, self.modes[self.mode_index], self.colors[self.color_index], clear_progress)
 
-    # Merge Canvas with Video Stream
-    gray_canvas = cv2.cvtColor(canvas, cv2.COLOR_BGR2GRAY)
-    _, inv_canvas = cv2.threshold(gray_canvas, 20, 255, cv2.THRESH_BINARY_INV)
-    inv_canvas = cv2.cvtColor(inv_canvas, cv2.COLOR_GRAY2BGR)
-    
-    frame = cv2.bitwise_and(frame, inv_canvas)
-    frame = cv2.bitwise_or(frame, canvas)
+            cv2.imshow("Air Canvas & Filter Viewport", final_frame)
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
 
-    # HUD / Overlay Information
-    current_color_bgr = colors[color_index]
-    cv2.putText(frame, f"Mode: {drawing_mode.upper()}", (10, 50),
-                cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-    cv2.rectangle(frame, (10, 70), (110, 110), current_color_bgr, -1)
-    cv2.rectangle(frame, (10, 70), (110, 110), (255, 255, 255), 2)
+        cap.release()
+        cv2.destroyAllWindows()
 
-    cv2.imshow("Air Canvas & Gestures", frame)
-    if cv2.waitKey(1) & 0xFF == ord('q'):
-        break
-
-cap.release()
-cv2.destroyAllWindows()
+if __name__ == "__main__":
+    app = SkytouchApp()
+    app.run()
