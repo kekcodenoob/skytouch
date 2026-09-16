@@ -35,6 +35,17 @@ class GestureRecognizer:
         ring_up = landmarks[self.mp_hands.HandLandmark.RING_FINGER_TIP].y < landmarks[self.mp_hands.HandLandmark.RING_FINGER_PIP].y
         pinky_up = landmarks[self.mp_hands.HandLandmark.PINKY_TIP].y < landmarks[self.mp_hands.HandLandmark.PINKY_PIP].y
 
+        # Thumb Out Detections
+        thumb_tip_lm = landmarks[self.mp_hands.HandLandmark.THUMB_TIP]
+        thumb_ip_lm = landmarks[self.mp_hands.HandLandmark.THUMB_IP]
+        thumb_extended = thumb_tip_lm.y < thumb_ip_lm.y
+
+        # Pinky + Thumb Out (for Undo)
+        pinky_thumb_out = pinky_up and thumb_extended and not index_up and not middle_up and not ring_up
+
+        # Index + Thumb Out ("Gun" / L-shape gesture for Brush Style)
+        index_thumb_out = index_up and thumb_extended and not middle_up and not ring_up and not pinky_up
+
         # Fist Detection
         mcp_dist = self.calculate_distance(index_mcp, wrist)
         is_fist = (self.calculate_distance(index_tip, wrist) < mcp_dist * 1.25 and 
@@ -54,6 +65,8 @@ class GestureRecognizer:
             'middle_up': middle_up,
             'ring_up': ring_up,
             'pinky_up': pinky_up,
+            'pinky_thumb_out': pinky_thumb_out,
+            'index_thumb_out': index_thumb_out,
             'is_fist': is_fist,
             'pinch_ratio': pinch_ratio
         }

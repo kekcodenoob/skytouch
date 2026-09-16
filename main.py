@@ -11,13 +11,16 @@ class SkytouchApp:
 
         self.mp_hands = mp.solutions.hands
         self.mp_drawing = mp.solutions.drawing_utils
+        
+        # Balanced confidence thresholds to prevent tracking resets
         self.hands = self.mp_hands.Hands(
             static_image_mode=False,
             max_num_hands=2,
-            min_detection_confidence=0.8,
-            min_tracking_confidence=0.8
+            min_detection_confidence=0.7,
+            min_tracking_confidence=0.7
         )
 
+        # Setting up gestures.py and drawing tools from canvas.py
         self.recognizer = GestureRecognizer()
         self.canvas_mgr = CanvasManager(width, height)
 
@@ -33,12 +36,35 @@ class SkytouchApp:
         self.pinch_start_pt = None
         self.clear_counter = 0
 
+        # Gesture Hold Counters & Threshold
+        self.HOLD_THRESHOLD = 8  # Require ~8 consecutive frames before confirming selection
+        self.color_hold_counter = 0
+        self.shape_hold_counter = 0
+        self.brush_hold_counter = 0
+
         self.gesture_cooldown = 0
         self.pointing_frame_count = 0
+        self.is_drawing_stroke = False  # Track stroke state for undo
 
-        # Viewport Filter State (5 total filters)
+        # Viewport Filter State (8 total filters)
         self.active_filter_index = 0
         self.was_two_hands = False
+
+        # LANDMARK SMOOTHING (EMA) STATE
+        self.smoothed_pt = None
+        self.alpha = 0.35  # Smoothing factor (0.1 = heavy smoothing, 1.0 = raw input)
+
+    def smooth_point(self, raw_point):
+        """Applies Exponential Moving Average (EMA) to smooth keypoint coordinates."""
+        if self.smoothed_pt is None:
+            self.smoothed_pt = (float(raw_point[0]), float(raw_point[1]))
+            return raw_point
+
+        sx = self.alpha * raw_point[0] + (1 - self.alpha) * self.smoothed_pt[0]
+        sy = self.alpha * raw_point[1] + (1 - self.alpha) * self.smoothed_pt[1]
+        self.smoothed_pt = (sx, sy)
+
+        return int(sx), int(sy)
 
     def print_terminal_instructions(self):
         """Prints control instructions to the terminal."""
@@ -50,15 +76,16 @@ class SkytouchApp:
 --- HAND GESTURES ---
   [1] Freehand Draw        : Raise Index Finger ONLY
   [2] Drag Bounding Shape  : Pinch (Thumb + Index Finger) and Drag
-  [3] Cycle Color          : Raise Index + Pinky Fingers
-  [4] Cycle Shape Mode     : Raise Index + Middle Fingers
-  [5] Cycle Brush Style    : Raise Index + Middle + Ring Fingers
-  [6] Clear Canvas         : Hold a closed Fist (progress bar fills)
-  [7] Viewport Filter Box  : Use TWO hands to form a boundary region
+  [3] Cycle Color          : Raise Index + Pinky Fingers (Hold)
+  [4] Cycle Shape Mode     : Raise Index + Middle Fingers (Hold)
+  [5] Cycle Brush Style    : Raise Index + Middle + Ring Fingers (Hold)
+  [6] Undo Action          : Pinky + Thumb Out (Surfer Handsign)
+  [7] Clear Canvas         : Hold a closed Fist (progress bar fills)
+  [8] Viewport Filter Box  : Use TWO hands to form a boundary region
 
 --- KEYBOARD SHORTCUTS ---
   [r] Toggle Video Recording
-  [c] Save Canvas Artwork
+  [s] Save Canvas Artwork
   [q] Quit Application
 
 ===================================================================
@@ -99,6 +126,8 @@ class SkytouchApp:
 
                 # --- TWO HAND MODE ---
                 if num_hands == 2:
+                    self.smoothed_pt = None  # Reset single-finger filter
+                    self.is_drawing_stroke = False
                     if not self.was_two_hands:
                         self.active_filter_index = (self.active_filter_index + 1) % len(self.canvas_mgr.filter_names)
                         self.was_two_hands = True
@@ -122,16 +151,34 @@ class SkytouchApp:
                 elif num_hands == 1:
                     self.was_two_hands = False
                     data = self.recognizer.parse_hand_data(results.multi_hand_landmarks[0], self.width, self.height)
+                    
+                    # Apply EMA smoothing filter to active index finger tip
+                    smoothed_index_tip = self.smooth_point(data['index_tip'])
+                    
                     current_color = self.colors[self.color_index]
                     current_shape = self.shape_modes[self.shape_index]
 
                     is_pinching_now = not data['is_fist'] and ((data['pinch_ratio'] < 0.18) or (self.is_pinching and data['pinch_ratio'] < 0.28))
+
+                    # Track active gesture targets to clear hold counters when released
+                    is_color_gesture = data['index_up'] and data['pinky_up'] and not data['middle_up'] and not data['ring_up']
+                    is_shape_gesture = data['index_up'] and data['middle_up'] and not data['ring_up'] and not data['pinky_up']
+                    is_brush_gesture = data['index_up'] and data['middle_up'] and data['ring_up'] and not data['pinky_up']
+
+                    if not is_color_gesture:
+                        self.color_hold_counter = 0
+                    if not is_shape_gesture:
+                        self.shape_hold_counter = 0
+                    if not is_brush_gesture:
+                        self.brush_hold_counter = 0
 
                     # 1. Fist: Clear Canvas
                     if data['is_fist']:
                         self.pointing_frame_count = 0
                         self.is_pinching = False
                         self.pinch_start_pt = None
+                        self.smoothed_pt = None
+                        self.is_drawing_stroke = False
                         self.clear_counter += 1
                         clear_progress = min(1.0, self.clear_counter / 30.0)
 
@@ -139,20 +186,20 @@ class SkytouchApp:
                             self.canvas_mgr.clear()
                             self.px, self.py = 0, 0
                             self.clear_counter = 0
-                            self.canvas_mgr.show_toast("CANVAS CLEARED")
 
                     # 2. Pinching: Live Shape Drag Preview
                     elif is_pinching_now:
                         self.pointing_frame_count = 0
                         self.clear_counter = 0
                         self.px, self.py = 0, 0
+                        self.is_drawing_stroke = False
 
                         if not self.is_pinching:
                             self.is_pinching = True
-                            self.pinch_start_pt = data['index_tip']
+                            self.pinch_start_pt = smoothed_index_tip
 
                         x1, y1 = self.pinch_start_pt
-                        x2, y2 = data['index_tip']
+                        x2, y2 = smoothed_index_tip
                         if current_shape == "rectangle":
                             cv2.rectangle(preview_layer, (x1, y1), (x2, y2), current_color, 3)
                         else:
@@ -165,49 +212,85 @@ class SkytouchApp:
                     elif self.is_pinching:
                         self.pointing_frame_count = 0
                         self.clear_counter = 0
-                        self.canvas_mgr.commit_drag_shape(current_shape, self.pinch_start_pt, data['index_tip'], current_color)
+                        self.is_drawing_stroke = False
+                        self.canvas_mgr.commit_drag_shape(current_shape, self.pinch_start_pt, smoothed_index_tip, current_color)
                         self.is_pinching = False
                         self.pinch_start_pt = None
 
-                    # 4. Gesture: Cycle Color (Index + Pinky Up)
-                    elif data['index_up'] and data['pinky_up'] and not data['middle_up'] and not data['ring_up'] and self.gesture_cooldown == 0:
+                    # 4. Gesture: Pinky + Thumb Out (Undo Action)
+                    elif data['pinky_thumb_out'] and self.gesture_cooldown == 0:
                         self.pointing_frame_count = 0
                         self.clear_counter = 0
-                        self.color_index = (self.color_index + 1) % len(self.colors)
-                        self.gesture_cooldown = 20
-                        self.canvas_mgr.show_toast(f"COLOR: {self.color_names[self.color_index].upper()}")
+                        self.px, self.py = 0, 0
+                        self.is_drawing_stroke = False
+                        self.canvas_mgr.undo()
+                        self.gesture_cooldown = 35
 
-                    # 5. Gesture: Cycle Shape Mode (Index + Middle Up)
-                    elif data['index_up'] and data['middle_up'] and not data['ring_up'] and not data['pinky_up'] and self.gesture_cooldown == 0:
+                    # 5. Gesture: Cycle Color (Index + Pinky Up with Hold)
+                    elif is_color_gesture and self.gesture_cooldown == 0:
                         self.pointing_frame_count = 0
                         self.clear_counter = 0
-                        self.shape_index = (self.shape_index + 1) % len(self.shape_modes)
-                        self.gesture_cooldown = 20
-                        self.canvas_mgr.show_toast(f"SHAPE: {self.shape_modes[self.shape_index].upper()}")
+                        self.is_drawing_stroke = False
+                        self.color_hold_counter += 1
 
-                    # 6. Gesture: Cycle Brush Style (Index + Middle + Ring Up)
-                    elif data['index_up'] and data['middle_up'] and data['ring_up'] and not data['pinky_up'] and self.gesture_cooldown == 0:
+                        if self.color_hold_counter >= self.HOLD_THRESHOLD:
+                            self.color_index = (self.color_index + 1) % len(self.colors)
+                            self.gesture_cooldown = 35
+                            self.color_hold_counter = 0
+                            self.canvas_mgr.show_toast(f"COLOR: {self.color_names[self.color_index].upper()}")
+
+                    # 6. Gesture: Cycle Shape Mode (Index + Middle Up with Hold)
+                    elif is_shape_gesture and self.gesture_cooldown == 0:
                         self.pointing_frame_count = 0
                         self.clear_counter = 0
-                        self.canvas_mgr.cycle_brush_mode()
-                        self.gesture_cooldown = 20
+                        self.is_drawing_stroke = False
+                        self.shape_hold_counter += 1
 
-                    # 7. Single Index Finger Up: Freehand Drawing
+                        if self.shape_hold_counter >= self.HOLD_THRESHOLD:
+                            self.shape_index = (self.shape_index + 1) % len(self.shape_modes)
+                            self.gesture_cooldown = 35
+                            self.shape_hold_counter = 0
+                            self.canvas_mgr.show_toast(f"SHAPE: {self.shape_modes[self.shape_index].upper()}")
+
+                    # 7. Gesture: Cycle Brush Style (Index + Middle + Ring Up with Hold)
+                    elif is_brush_gesture and self.gesture_cooldown == 0:
+                        self.pointing_frame_count = 0
+                        self.clear_counter = 0
+                        self.is_drawing_stroke = False
+                        self.brush_hold_counter += 1
+
+                        if self.brush_hold_counter >= self.HOLD_THRESHOLD:
+                            self.canvas_mgr.cycle_brush_mode()
+                            self.gesture_cooldown = 35
+                            self.brush_hold_counter = 0
+
+                    # 8. Single Index Finger Up: Freehand Drawing
                     elif data['index_up'] and not data['middle_up'] and not data['ring_up'] and not data['pinky_up']:
                         self.clear_counter = 0
                         self.pointing_frame_count += 1
+                        
                         if self.pointing_frame_count >= 2:
+                            # Save state ONCE at the start of a freehand stroke
+                            if not self.is_drawing_stroke:
+                                self.canvas_mgr.save_state()
+                                self.is_drawing_stroke = True
+
                             if self.px == 0 and self.py == 0:
-                                self.px, self.py = data['index_tip']
-                            self.canvas_mgr.draw_line((self.px, self.py), data['index_tip'], current_color)
-                            self.px, self.py = data['index_tip']
+                                self.px, self.py = smoothed_index_tip
+                            self.canvas_mgr.draw_line((self.px, self.py), smoothed_index_tip, current_color)
+                            self.px, self.py = smoothed_index_tip
                     else:
                         self.pointing_frame_count = 0
                         self.clear_counter = 0
                         self.px, self.py = 0, 0
+                        self.smoothed_pt = None
+                        self.is_drawing_stroke = False
 
             else:
                 self.was_two_hands = False
+                self.smoothed_pt = None
+                self.px, self.py = 0, 0
+                self.is_drawing_stroke = False
 
             # Render output layers
             final_frame = self.canvas_mgr.merge_layers(frame, preview_layer)
@@ -221,7 +304,7 @@ class SkytouchApp:
                 self.canvas_mgr.toggle_recording()
                 status = "RECORDING STARTED" if self.canvas_mgr.is_recording else "RECORDING STOPPED"
                 self.canvas_mgr.show_toast(status)
-            elif key == ord('c'):
+            elif key == ord('s'):
                 self.canvas_mgr.save_image()
                 self.canvas_mgr.show_toast("CANVAS SAVED")
 

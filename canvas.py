@@ -10,6 +10,10 @@ class CanvasManager:
         # Primary drawing canvas
         self.canvas = np.zeros((height, width, 3), dtype=np.uint8)
         
+        # Undo history stack
+        self.undo_stack = []
+        self.max_undo = 50
+        
         # Optional image editing layer
         self.background_image = None
         
@@ -17,7 +21,7 @@ class CanvasManager:
         self.brush_mode = "SOLID"  # Supported: "SOLID", "NEON", "DASHED", "ERASER"
         self.dash_counter = 0
         
-        # Extended list including new filters: PIXELATE, THERMAL, and COLOR_INVERT
+        # Extended list including filters: PIXELATE, THERMAL, and COLOR_INVERT
         self.filter_names = [
             "GRAYSCALE", 
             "INVERT", 
@@ -36,6 +40,22 @@ class CanvasManager:
         # Recording video stream setup
         self.video_writer = None
         self.is_recording = False
+
+    def save_state(self):
+        """Saves current canvas state to undo stack."""
+        if len(self.undo_stack) >= self.max_undo:
+            self.undo_stack.pop(0)  # Remove oldest state
+        self.undo_stack.append(self.canvas.copy())
+
+    def undo(self):
+        """Restores the canvas to the previous saved state."""
+        if self.undo_stack:
+            self.canvas = self.undo_stack.pop()
+            self.show_toast("UNDO SUCCESSFUL")
+            return True
+        else:
+            self.show_toast("NOTHING TO UNDO")
+            return False
 
     def show_toast(self, text, duration=1.5):
         """Triggers an on-screen announcement message."""
@@ -59,7 +79,8 @@ class CanvasManager:
         return False
 
     def clear(self):
-        """Resets the canvas."""
+        """Resets the canvas after saving state for undo."""
+        self.save_state()
         self.canvas[:] = 0
 
     def draw_line(self, p1, p2, color, thickness=6):
@@ -85,6 +106,10 @@ class CanvasManager:
         """Commits dragged bounding shapes directly onto the canvas."""
         if not p1 or not p2:
             return
+        
+        # Save state before applying shape permanently
+        self.save_state()
+        
         x1, y1 = p1
         x2, y2 = p2
 
@@ -122,7 +147,6 @@ class CanvasManager:
             filtered_roi = cv2.cvtColor(filtered_roi, cv2.COLOR_GRAY2BGR)
 
         elif filter_name == "INVERT" or filter_name == "COLOR_INVERT":
-            # Inverts all color channels
             filtered_roi = cv2.bitwise_not(roi)
 
         elif filter_name == "SEPIA":
@@ -146,7 +170,6 @@ class CanvasManager:
             filtered_roi = cv2.GaussianBlur(roi, (21, 21), 0)
 
         elif filter_name == "PIXELATE":
-            # Downscale and upscale back to create pixelation effect
             pixel_size = 16
             temp_w = max(1, w // pixel_size)
             temp_h = max(1, h // pixel_size)
@@ -154,7 +177,6 @@ class CanvasManager:
             filtered_roi = cv2.resize(small, (w, h), interpolation=cv2.INTER_NEAREST)
 
         elif filter_name == "THERMAL":
-            # Convert to grayscale first, then apply JET colormap for pseudo-thermal look
             gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
             filtered_roi = cv2.applyColorMap(gray, cv2.COLORMAP_JET)
 
