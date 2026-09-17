@@ -28,7 +28,8 @@ class SkytouchApp:
         self.color_names = ["Red", "Green", "Blue", "Yellow"]
         self.color_index = 0
 
-        self.shape_modes = ["rectangle", "ellipse"]
+        # Extended shape modes list
+        self.shape_modes = ["rectangle", "ellipse", "line", "circle", "triangle"]
         self.shape_index = 0
 
         self.px, self.py = 0, 0
@@ -187,7 +188,7 @@ class SkytouchApp:
                             self.px, self.py = 0, 0
                             self.clear_counter = 0
 
-                    # 2. Pinching: Live Shape Drag Preview
+                    # 2. Pinching: Live Shape Drag Preview (Updated for all shapes)
                     elif is_pinching_now:
                         self.pointing_frame_count = 0
                         self.clear_counter = 0
@@ -200,9 +201,26 @@ class SkytouchApp:
 
                         x1, y1 = self.pinch_start_pt
                         x2, y2 = smoothed_index_tip
+
                         if current_shape == "rectangle":
                             cv2.rectangle(preview_layer, (x1, y1), (x2, y2), current_color, 3)
-                        else:
+
+                        elif current_shape == "line":
+                            cv2.line(preview_layer, (x1, y1), (x2, y2), current_color, 3)
+
+                        elif current_shape == "circle":
+                            radius = int(np.hypot(x2 - x1, y2 - y1))
+                            cv2.circle(preview_layer, (x1, y1), radius, current_color, 3)
+
+                        elif current_shape == "triangle":
+                            pts = np.array([
+                                [(x1 + x2) // 2, y1],
+                                [x1, y2],
+                                [x2, y2]
+                            ], np.int32)
+                            cv2.polylines(preview_layer, [pts], isClosed=True, color=current_color, thickness=3)
+
+                        else:  # Ellipse / Default
                             cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
                             ax, ay = abs(x2 - x1) // 2, abs(y2 - y1) // 2
                             if ax > 0 and ay > 0:
@@ -224,7 +242,7 @@ class SkytouchApp:
                         self.px, self.py = 0, 0
                         self.is_drawing_stroke = False
                         self.canvas_mgr.undo()
-                        self.gesture_cooldown = 35
+                        self.gesture_cooldown = 25
 
                     # 5. Gesture: Cycle Color (Index + Pinky Up with Hold)
                     elif is_color_gesture and self.gesture_cooldown == 0:
@@ -235,7 +253,7 @@ class SkytouchApp:
 
                         if self.color_hold_counter >= self.HOLD_THRESHOLD:
                             self.color_index = (self.color_index + 1) % len(self.colors)
-                            self.gesture_cooldown = 35
+                            self.gesture_cooldown = 25
                             self.color_hold_counter = 0
                             self.canvas_mgr.show_toast(f"COLOR: {self.color_names[self.color_index].upper()}")
 
@@ -248,7 +266,7 @@ class SkytouchApp:
 
                         if self.shape_hold_counter >= self.HOLD_THRESHOLD:
                             self.shape_index = (self.shape_index + 1) % len(self.shape_modes)
-                            self.gesture_cooldown = 35
+                            self.gesture_cooldown = 25
                             self.shape_hold_counter = 0
                             self.canvas_mgr.show_toast(f"SHAPE: {self.shape_modes[self.shape_index].upper()}")
 
@@ -261,7 +279,7 @@ class SkytouchApp:
 
                         if self.brush_hold_counter >= self.HOLD_THRESHOLD:
                             self.canvas_mgr.cycle_brush_mode()
-                            self.gesture_cooldown = 35
+                            self.gesture_cooldown = 25
                             self.brush_hold_counter = 0
 
                     # 8. Single Index Finger Up: Freehand Drawing

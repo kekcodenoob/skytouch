@@ -115,7 +115,25 @@ class CanvasManager:
 
         if mode == "rectangle":
             cv2.rectangle(self.canvas, (x1, y1), (x2, y2), color, 3)
-        else:
+
+        elif mode == "line":
+            cv2.line(self.canvas, (x1, y1), (x2, y2), color, 3)
+
+        elif mode == "circle":
+            # Calculate distance between start and current drag position for radius
+            radius = int(np.hypot(x2 - x1, y2 - y1))
+            cv2.circle(self.canvas, (x1, y1), radius, color, 3)
+
+        elif mode == "triangle":
+            # Form an isosceles triangle within the drag bounding box
+            pts = np.array([
+                [(x1 + x2) // 2, y1],  # Top middle
+                [x1, y2],              # Bottom left
+                [x2, y2]               # Bottom right
+            ], np.int32)
+            cv2.polylines(self.canvas, [pts], isClosed=True, color=color, thickness=3)
+
+        else:  # Ellipse / Default
             cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
             ax, ay = abs(x2 - x1) // 2, abs(y2 - y1) // 2
             if ax > 0 and ay > 0:
