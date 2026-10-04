@@ -12,15 +12,19 @@ class CanvasManager:
         self.height = height
 
         # Overlay Image Properties
-        self.raw_overlay = None  # Original unscaled image
-        self.overlay_pos = [100, 100]  # Top-left corner [x, y]
-        self.overlay_scale = 1.0  # Scale multiplier (0.1x to 3.0x)
-        self.overlay_alpha = 0.7  # Transparency layer blend ratio
+        self.raw_overlay = None
+        self.overlay_pos = [100, 100]
+        self.overlay_scale = 1.0
+        self.overlay_alpha = 0.7
 
         # Primary drawing canvas
         self.canvas = np.zeros((height, width, 3), dtype=np.uint8)
 
-        # Undo history stack
+        # Persistent Viewport Filter State
+        self.active_filter_pts = None  # Stores saved quad points [p1, p2, p3, p4]
+        self.active_filter_idx = None  # Stores applied filter index
+
+        # Undo history stack (stores tuple of canvas and active filter state)
         self.undo_stack = []
         self.max_undo = 50
 
@@ -57,15 +61,31 @@ class CanvasManager:
         self.is_recording = False
 
     def save_state(self):
-        """Saves current canvas state to the undo stack."""
+        """Saves current canvas state and active filter state to undo stack."""
         if len(self.undo_stack) >= self.max_undo:
             self.undo_stack.pop(0)
-        self.undo_stack.append(self.canvas.copy())
+
+        # Store canvas copy along with current persistent filter state
+        filter_state = (
+            self.active_filter_pts.copy()
+            if self.active_filter_pts is not None
+            else None,
+            self.active_filter_idx,
+        )
+        self.undo_stack.append((self.canvas.copy(), filter_state))
 
     def undo(self):
-        """Restores the canvas to the previous saved state."""
+        """Restores canvas and active filter to the previous saved state."""
         if self.undo_stack:
-            self.canvas = self.undo_stack.pop()
+            saved_canvas, saved_filter_state = self.undo_stack.pop()
+            self.canvas = saved_canvas
+            if saved_filter_state is not None:
+                self.active_filter_pts, self.active_filter_idx = (
+                    saved_filter_state
+                )
+            else:
+                self.active_filter_pts = None
+                self.active_filter_idx = None
             self.show_toast("UNDO SUCCESSFUL")
             return True
         else:
@@ -94,9 +114,11 @@ class CanvasManager:
         return False
 
     def clear(self):
-        """Resets the canvas drawing layer."""
+        """Resets drawing layer and active persistent filter."""
         self.save_state()
         self.canvas[:] = 0
+        self.active_filter_pts = None
+        self.active_filter_idx = None
 
     def draw_line(self, p1, p2, color, thickness=6):
         """Draws lines onto the canvas layer using the active brush style."""
@@ -510,10 +532,10 @@ class CanvasManager:
             )
 
     def merge_layers(self, camera_frame, preview_layer):
-        """Composites webcam feed, image overlay, drawing canvas, and shape previews."""
+        """Composites webcam feed, image overlay, persistent filter, canvas, and preview layer."""
         base = camera_frame.copy()
 
-        # 1. Static full-screen background image (if loaded)
+        # 1. Static background image (if loaded)
         if self.background_image is not None:
             base = cv2.addWeighted(base, 0.4, self.background_image, 0.6, 0)
 
@@ -543,7 +565,6 @@ class CanvasManager:
                     overlay_crop = resized_img[oy1:oy2, ox1:ox2]
                     frame_roi = base[iy1:iy2, ix1:ix2]
 
-                    # Handle 4-channel PNG transparency or 3-channel standard image
                     if (
                         overlay_crop.ndim == 3
                         and overlay_crop.shape[2] == 4
@@ -565,7 +586,17 @@ class CanvasManager:
                         )
                         base[iy1:iy2, ix1:ix2] = blended
 
-        # 3. Blend primary drawing canvas
+        # 3. Apply persistent viewport filter over camera + background + uploaded image composite
+        if (
+            self.active_filter_pts is not None
+            and self.active_filter_idx is not None
+        ):
+            p1, p2, p3, p4 = self.active_filter_pts
+            base = self.apply_viewport_filter(
+                base, p1, p2, p3, p4, self.active_filter_idx
+            )
+
+        # 4. Blend primary drawing canvas
         gray_canvas = cv2.cvtColor(self.canvas, cv2.COLOR_BGR2GRAY)
         _, mask = cv2.threshold(gray_canvas, 1, 255, cv2.THRESH_BINARY)
         mask_inv = cv2.bitwise_not(mask)
@@ -574,17 +605,16 @@ class CanvasManager:
         fg = cv2.bitwise_and(self.canvas, self.canvas, mask=mask)
         combined = cv2.add(bg, fg)
 
-        # 4. Blend dynamic preview layer (shape dragging previews)
+        # 5. Blend dynamic preview layer
         final_output = cv2.addWeighted(combined, 1.0, preview_layer, 1.0, 0)
 
-        # 5. Output frame to video recorder if active
         if self.is_recording and self.video_writer is not None:
             self.video_writer.write(final_output)
 
         return final_output
 
     def save_image(self, filename="artwork.png"):
-        """Saves the static background, uploaded overlay photo, and drawings to disk without camera feed."""
+        """Saves the static background, uploaded overlay photo, persistent filter, and drawings to disk without camera feed."""
         # 1. Base background frame
         if self.background_image is not None:
             final_composite = self.background_image.copy()
@@ -636,12 +666,22 @@ class CanvasManager:
                         )
                         final_composite[iy1:iy2, ix1:ix2] = blended
 
-        # 3. Layer the drawing canvas on top
+        # 3. Apply active viewport filter over background + uploaded overlay composite
+        if (
+            self.active_filter_pts is not None
+            and self.active_filter_idx is not None
+        ):
+            p1, p2, p3, p4 = self.active_filter_pts
+            final_composite = self.apply_viewport_filter(
+                final_composite, p1, p2, p3, p4, self.active_filter_idx
+            )
+
+        # 4. Layer the drawing canvas on top
         gray_canvas = cv2.cvtColor(self.canvas, cv2.COLOR_BGR2GRAY)
         _, mask = cv2.threshold(gray_canvas, 1, 255, cv2.THRESH_BINARY)
         final_composite[mask > 0] = self.canvas[mask > 0]
 
-        # 4. Export to disk
+        # 5. Export to disk
         cv2.imwrite(filename, final_composite)
         self.show_toast("ARTWORK SAVED")
         print(f"Artwork saved successfully as '{filename}'.")

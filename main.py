@@ -185,6 +185,7 @@ class SkytouchApp:
                     self.smoothed_pt = None
                     self.is_drawing_stroke = False
                     if not self.was_two_hands:
+                        self.canvas_mgr.save_state()
                         self.active_filter_index = (
                             self.active_filter_index + 1
                         ) % len(self.canvas_mgr.filter_names)
@@ -246,8 +247,10 @@ class SkytouchApp:
                             ),
                         )
 
-                        frame = self.canvas_mgr.apply_viewport_filter(
-                            frame, p1, p2, p3, p4, self.active_filter_index
+                        # Persist active points and active filter selection
+                        self.canvas_mgr.active_filter_pts = [p1, p2, p3, p4]
+                        self.canvas_mgr.active_filter_idx = (
+                            self.active_filter_index
                         )
 
                 # --- SINGLE HAND MODE ---
