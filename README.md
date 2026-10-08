@@ -8,7 +8,9 @@ Skytouch is a real-time computer vision application that turns hand gestures int
 
 ### Hand Gestures
 * **Freehand Draw:** Raise **Index Finger** only.
-* **Drag Bounding Shape:** **Pinch** (Thumb + Index Finger) and drag across the screen.
+* **Drag Bounding Shape:** **Pinch** (Thumb + Pinky Finger) and drag across the screen.
+* **Drag Uploaded Image:** **OK Sign** (Thumb + Index Finger/OK hand sign) and drag across the screen.
+* **Scale Uploaded Image:** **Two Hands Move Closer/Farther** (Thumb + Index Finger/OK hand sign) and put hands closer to scale down/farther apart to scale up.
 * **Cycle Color:** Raise **Index + Pinky** fingers (Hold).
 * **Cycle Shape Mode:** Raise **Index + Middle** fingers (Hold).
 * **Cycle Brush Style:** Raise **Index + Middle + Ring** fingers (Hold).
@@ -18,6 +20,7 @@ Skytouch is a real-time computer vision application that turns hand gestures int
 
 ### Keyboard Shortcuts
 * `r` – Toggle video recording.
+* `u` – Upload image from computer for editing.
 * `s` – Save current canvas artwork to disk.
 * `q` – Quit application.
 
@@ -67,6 +70,5 @@ Skytouch is a real-time computer vision application that turns hand gestures int
 
 * **On-Screen UI Toolbar:** Add a virtual button panel so users can select colors, shapes, filters, and brush sizes directly with their index finger instead of relying solely on gesture holds.
 * **Custom Color Palette:** Allow users to pick custom RGB colors via a virtual color wheel.
-* **Dynamic Eraser Mode:** Add a dedicated eraser gesture or mode to clear precise sections of the canvas without resetting the entire frame.
 * **Multi-Hand Canvas Collaboration:** Support simultaneous drawing and shape manipulation for two hands or two separate users.
-* **Image Upload and Editing:** Allow users to place their own images onto the canvas, add drawings and filters, then download the completed graphic.
+* **Canvas Toggle On/Off:** Allow for all or some drawing features to be turned on and off, giving users freedom to move around without messing up their canvas.
