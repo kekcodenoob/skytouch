@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/skytouch.png" width="128" alt="Skytouch icon"></p>
+
 # Skytouch
 
 Skytouch is a real-time computer vision app that turns hand gestures into a digital canvas, image editor, and live video filter interface using OpenCV and MediaPipe. Draw, add shapes, and edit images in the air in front of a webcam, with no mouse, stylus or touchscreen.
@@ -38,11 +40,10 @@ Skytouch is quick to learn and people want to come back, but accidental gestures
 
 ### Hand Gestures
 * **Freehand Draw:** Raise **Index Finger** only.
-* **Drag Bounding Shape:** **Pinch** (Thumb + Pinky Finger), drag, and release to place. Shapes: rectangle, ellipse, line, circle, triangle.
-* **Drag Uploaded Image:** **OK Sign** (Thumb + Index touching) and drag across the screen (only while an image is loaded).
-* **Scale Uploaded Image:** **OK Sign with both hands**. Move your hands closer together to shrink the image, or farther apart to enlarge it.
+* **Drag Bounding Shape:** **Pinch** (Thumb + Index Finger), drag, and release to place. Tiny accidental drags are ignored. Shapes: rectangle, ellipse, line, circle, triangle.
+* **Drag Uploaded Image:** Raise **Index + Middle** fingers (Peace sign) and move your hand (only while an image is loaded).
+* **Scale Uploaded Image:** Peace sign on **both hands**. Move your hands closer together to shrink the image, or farther apart to enlarge it.
 * **Cycle Color:** Hold **Index + Pinky** fingers up. Colors: red, green, blue, yellow.
-* **Cycle Shape Mode:** Hold **Index + Middle** fingers up (Peace sign).
 * **Undo Action:** Hold **Pinky + Thumb** out (Shaka). Also undoes filter changes.
 * **Clear Canvas:** Hold a closed **Fist** for ~1.5s (progress bar fills).
 * **Viewport Filter Box:** Make an **"L"** (thumb + index) with **both hands** to frame a region. Each new frame cycles the live filter.
@@ -51,12 +52,35 @@ Skytouch is quick to learn and people want to come back, but accidental gestures
 ### Live Filters
 11 filters you can apply to any framed region: grayscale, invert, sepia, Sobel edges, blur, pixelate, thermal, glass, ASCII, night vision, and kaleidoscope. The filter stays in place and is included when you save.
 
+### On-Screen Toolbar
+A button strip along the top edge: color, shape, brush, undo, clear, save, record, gallery, and pause. **Point** at a button and hold still for about 0.6s to press it (a bar fills as you hover). Your finger doesn't draw while it's over the toolbar.
+
+### Brush Styles
+Cycle with the toolbar's brush button or `b`:
+**Solid**, **Neon**, **Rainbow** (color shifts as you draw), **Ink** (thinner when you move fast, thicker when slow), **Calligraphy** (slanted nib, thick or thin depending on direction), **Spray** (spray-paint dots), **Sparkle** (line with glitter and stars), **Dashed**, and **Eraser**.
+
+### Pause
+Pause the canvas (toolbar or `p`) to move around freely. All gestures are off while paused, and the toolbar stays visible so you can resume hands-free.
+
+### Gallery & Saves
+Saves go to the `saves/` folder with a timestamp, so nothing gets overwritten. Images are PNG and recordings are MP4. The gallery (toolbar or `g`) shows all your saves as thumbnails. Point and hold on one, or click it with the mouse, to open it.
+* **Videos:** play/pause and a seek bar (hover or click a spot to jump there).
+* **Images:** **Edit** puts the image back on the canvas so you can keep drawing on it (undoable).
+* **Show File** / **Open Folder** opens it in your file explorer so you can share it.
+
+### Window
+Skytouch opens fullscreen with its own icon in the title bar and taskbar. Press `f` to toggle fullscreen (`Esc` also leaves it). Toolbar buttons can be clicked with the mouse too.
+
 ### Keyboard Shortcuts
+* `p` – Pause / resume the canvas.
+* `g` – Open / close the gallery (`a` / `d` = previous / next, `space` = play/pause, `e` = edit image, `Esc` = back).
+* `f` – Toggle fullscreen.
+* `t` – Show / hide the toolbar.
 * `b` – Cycle brush style (solid, neon, dashed, eraser).
 * `c` – Clear canvas.
-* `r` – Toggle video recording.
+* `r` – Toggle video recording (MP4).
 * `u` – Upload image from computer for editing.
-* `s` – Save current canvas artwork to disk as a PNG (without the camera feed).
+* `s` – Save current canvas artwork as a PNG (without the camera feed).
 * `q` – Quit application.
 
 ---
@@ -104,8 +128,8 @@ Skytouch is quick to learn and people want to come back, but accidental gestures
 ## Roadmap
 
 1. **Fewer accidental gestures:** find and fix the gestures that misfire most, then retest against the under-1-per-session target.
-2. **On-Screen UI Toolbar:** a virtual button panel so users can select colors, shapes, filters, and brush sizes with their index finger instead of memorizing gesture holds.
-3. **Canvas Toggle On/Off:** turn some or all drawing features off so users can move around without messing up their canvas.
+2. ~~**On-Screen UI Toolbar**~~ ✅ Done (hover-to-press buttons). Next: filter picker and brush sizes.
+3. ~~**Canvas Toggle On/Off**~~ ✅ Done (pause).
 4. **Custom Color Palette:** pick custom RGB colors from a virtual color wheel.
 5. **Multi-Hand Canvas Collaboration:** simultaneous drawing and shape manipulation with two hands or two people.
 
@@ -114,7 +138,7 @@ Skytouch is quick to learn and people want to come back, but accidental gestures
 - **Gesture collisions:** similar hand shapes can trigger the wrong action. Currently reduced with distance scaling, hysteresis thresholds and frame debouncing.
 - **Discoverability:** users have to memorize about 10 gestures, and hold-to-cycle controls are invisible until learned.
 - **Environment:** poor lighting or a low-quality webcam reduces tracking accuracy.
-- **Keyboard still needed:** uploading, saving and recording use key presses.
+- **Keyboard still needed:** uploading an image uses a key press and a file dialog.
 
 ## Open Questions
 
@@ -130,15 +154,16 @@ Skytouch is quick to learn and people want to come back, but accidental gestures
    - Raising only the index finger draws a stroke
    - Color and brush style can be changed with a hold gesture, without touching the keyboard
 2. **Shapes.** As a user, I want clean shapes without steady-hand drawing.
-   - A thumb + pinky pinch and drag places the current shape
+   - A thumb + index pinch and drag places the current shape
 3. **Image editing.** As a user, I want to bring in my own photo and position it.
-   - `u` uploads an image; an OK sign drags it; two OK signs scale it
+   - `u` uploads an image; a peace sign drags it; a peace sign on both hands scales it
 4. **Live filters.** As a presenter or streamer, I want effects on just part of the frame.
    - Two hands frame a region; the filter persists and is included in saves
 5. **Fixing mistakes.** As a user, I want to undo without starting over.
    - The shaka gesture undoes the last action, including filter changes
    - Clearing requires holding a fist until the progress bar fills
 6. **Saving and sharing.** As a user, I want to keep what I made.
-   - `s` saves a PNG without the camera feed; `r` records the session as video
+   - `s` saves a PNG without the camera feed; `r` records the session as MP4
+   - Saves are timestamped and browsable in the in-app gallery
 
 </details>

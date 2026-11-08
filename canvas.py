@@ -4,6 +4,10 @@ import time
 import tkinter as tk
 from tkinter import filedialog
 
+from media import new_media_path
+
+BRUSH_MODES = ["SOLID", "NEON", "RAINBOW", "INK", "CALLIGRAPHY", "SPRAY", "SPARKLE", "DASHED", "ERASER"]
+
 
 class CanvasManager:
 
@@ -32,10 +36,11 @@ class CanvasManager:
         self.background_image = None
 
         # Brush state configuration
-        self.brush_mode = (
-            "SOLID"  # Supported modes: "SOLID", "NEON", "DASHED", "ERASER"
-        )
+        self.brush_mode = "SOLID"  # one of BRUSH_MODES
         self.dash_counter = 0
+        self.rainbow_hue = 0
+        self.ink_width = None
+        self.rng = np.random.default_rng()
 
         # Filter list for viewport rendering
         self.filter_names = [
@@ -99,11 +104,46 @@ class CanvasManager:
 
     def cycle_brush_mode(self):
         """Cycles through available brush styles."""
-        modes = ["SOLID", "NEON", "DASHED", "ERASER"]
-        current_idx = modes.index(self.brush_mode)
-        self.brush_mode = modes[(current_idx + 1) % len(modes)]
+        idx = BRUSH_MODES.index(self.brush_mode)
+        self.brush_mode = BRUSH_MODES[(idx + 1) % len(BRUSH_MODES)]
+        self.ink_width = None
         self.show_toast(f"BRUSH: {self.brush_mode}")
         return self.brush_mode
+
+    def preview_color(self, color):
+        """Color to use for the live (not yet committed) part of a stroke."""
+        if self.brush_mode == "ERASER":
+            return (128, 128, 128)
+        if self.brush_mode == "RAINBOW":
+            return self._hue_bgr(self.rainbow_hue)
+        return color
+
+    @staticmethod
+    def _hue_bgr(hue):
+        hsv = np.uint8([[[hue % 180, 255, 255]]])
+        return tuple(int(c) for c in cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)[0, 0])
+
+    def _spray(self, p1, p2, color, radius, density):
+        """Scatter dots around the segment p1 -> p2 (spray paint / sparkle dust)."""
+        seg = max(1.0, float(np.hypot(p2[0] - p1[0], p2[1] - p1[1])))
+        n = int(density * (seg / 4 + 3))
+        t = self.rng.random(n)
+        pts = np.stack([p1[0] + (p2[0] - p1[0]) * t, p1[1] + (p2[1] - p1[1]) * t], axis=1)
+        pts += self.rng.normal(0, radius / 2, (n, 2))
+        for x, y in pts.astype(int):
+            if 0 <= x < self.width and 0 <= y < self.height:
+                self.canvas[y, x] = color
+        return pts
+
+    def load_into_canvas(self, image_path):
+        """Puts a saved artwork back on the drawing layer so it can be edited (undoable)."""
+        img = cv2.imread(image_path)
+        if img is None:
+            self.show_toast("FAILED TO LOAD IMAGE")
+            return False
+        self.save_state()
+        self.canvas = cv2.resize(img, (self.width, self.height), interpolation=cv2.INTER_AREA)
+        return True
 
     def load_background_image(self, image_path):
         """Loads a static background image stretched across canvas dimensions."""
@@ -139,6 +179,37 @@ class CanvasManager:
             self.dash_counter += 1
             if (self.dash_counter // 4) % 2 == 0:
                 cv2.line(self.canvas, p1, p2, color, thickness)
+
+        elif self.brush_mode == "RAINBOW":
+            self.rainbow_hue = (self.rainbow_hue + 3) % 180
+            cv2.line(self.canvas, p1, p2, self._hue_bgr(self.rainbow_hue), thickness, cv2.LINE_AA)
+
+        elif self.brush_mode == "INK":
+            # Fast strokes get thinner, slow strokes get thicker, like a brush pen
+            seg = float(np.hypot(p2[0] - p1[0], p2[1] - p1[1]))
+            target = float(np.clip(thickness * 2.4 - seg * 0.22, 2, thickness * 2.4))
+            self.ink_width = target if self.ink_width is None else 0.7 * self.ink_width + 0.3 * target
+            cv2.line(self.canvas, p1, p2, color, max(1, int(self.ink_width)), cv2.LINE_AA)
+
+        elif self.brush_mode == "CALLIGRAPHY":
+            # Flat nib held at 45 degrees: thick or thin depending on stroke direction
+            n = np.array([1.0, -1.0]) / np.sqrt(2) * thickness * 1.5
+            a, b = np.array(p1, float), np.array(p2, float)
+            quad = np.array([a + n, b + n, b - n, a - n], np.int32)
+            cv2.fillConvexPoly(self.canvas, quad, color, cv2.LINE_AA)
+
+        elif self.brush_mode == "SPRAY":
+            self._spray(p1, p2, color, radius=thickness * 4, density=6)
+
+        elif self.brush_mode == "SPARKLE":
+            cv2.line(self.canvas, p1, p2, color, max(2, thickness // 2), cv2.LINE_AA)
+            dust = self._spray(p1, p2, (255, 255, 255), radius=thickness * 5, density=0.6)
+            if self.rng.random() < 0.35 and len(dust):  # occasional 4-point star
+                x, y = dust[0].astype(int)
+                r = int(self.rng.integers(5, 11))
+                cv2.line(self.canvas, (x - r, y), (x + r, y), (255, 255, 255), 1, cv2.LINE_AA)
+                cv2.line(self.canvas, (x, y - r), (x, y + r), (255, 255, 255), 1, cv2.LINE_AA)
+                cv2.circle(self.canvas, (x, y), 2, color, -1, cv2.LINE_AA)
 
         else:  # SOLID
             cv2.line(self.canvas, p1, p2, color, thickness)
@@ -399,12 +470,14 @@ class CanvasManager:
 
         return frame
 
-    def draw_hud(self, frame, shape_mode, color, clear_progress=0.0):
-        """Renders HUD status indicators and toast announcements."""
+    def draw_hud(self, frame, shape_mode, color, clear_progress=0.0, top=0):
+        """Renders HUD status indicators and toast announcements.
+
+        `top` shifts everything down (e.g. to sit below a top toolbar)."""
         cv2.putText(
             frame,
             f"Brush Style: {self.brush_mode}",
-            (20, 35),
+            (20, 35 + top),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.6,
             (255, 255, 255),
@@ -413,15 +486,15 @@ class CanvasManager:
         cv2.putText(
             frame,
             f"Pinch Shape: {shape_mode.upper()}",
-            (20, 65),
+            (20, 65 + top),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.6,
             (200, 200, 200),
             1,
         )
 
-        cv2.rectangle(frame, (20, 80), (60, 110), color, -1)
-        cv2.rectangle(frame, (20, 80), (60, 110), (255, 255, 255), 2)
+        cv2.rectangle(frame, (20, 80 + top), (60, 110 + top), color, -1)
+        cv2.rectangle(frame, (20, 80 + top), (60, 110 + top), (255, 255, 255), 2)
 
         if time.time() < self.toast_end_time:
             text_size = cv2.getTextSize(
@@ -431,22 +504,22 @@ class CanvasManager:
 
             cv2.rectangle(
                 frame,
-                (cx - 15, 30),
-                (cx + text_size[0] + 15, 75),
+                (cx - 15, 30 + top),
+                (cx + text_size[0] + 15, 75 + top),
                 (0, 0, 0),
                 -1,
             )
             cv2.rectangle(
                 frame,
-                (cx - 15, 30),
-                (cx + text_size[0] + 15, 75),
+                (cx - 15, 30 + top),
+                (cx + text_size[0] + 15, 75 + top),
                 (0, 255, 255),
                 2,
             )
             cv2.putText(
                 frame,
                 self.toast_msg,
-                (cx, 62),
+                (cx, 62 + top),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.9,
                 (0, 255, 255),
@@ -455,12 +528,12 @@ class CanvasManager:
 
         if clear_progress > 0:
             bar_w = int(200 * clear_progress)
-            cv2.rectangle(frame, (20, 130), (220, 145), (50, 50, 50), -1)
-            cv2.rectangle(frame, (20, 130), (20 + bar_w, 145), (0, 0, 255), -1)
+            cv2.rectangle(frame, (20, 130 + top), (220, 145 + top), (50, 50, 50), -1)
+            cv2.rectangle(frame, (20, 130 + top), (20 + bar_w, 145 + top), (0, 0, 255), -1)
             cv2.putText(
                 frame,
                 "HOLD FIST TO CLEAR",
-                (20, 125),
+                (20, 125 + top),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.4,
                 (0, 0, 255),
@@ -468,24 +541,30 @@ class CanvasManager:
             )
 
         if self.is_recording:
-            cv2.circle(frame, (self.width - 30, 30), 10, (0, 0, 255), -1)
+            cv2.circle(frame, (self.width - 30, 30 + top), 10, (0, 0, 255), -1)
             cv2.putText(
                 frame,
                 "REC",
-                (self.width - 80, 35),
+                (self.width - 80, 35 + top),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.5,
                 (0, 0, 255),
                 2,
             )
 
-    def toggle_recording(self, filename="session.avi"):
-        """Toggles video recording on and off."""
+    def toggle_recording(self, fps=20.0):
+        """Toggles MP4 recording on and off. `fps` should match the real loop rate
+        so playback runs at normal speed."""
         if not self.is_recording:
-            fourcc = cv2.VideoWriter_fourcc(*"XVID")
+            self.recording_path = new_media_path(".mp4")
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
             self.video_writer = cv2.VideoWriter(
-                filename, fourcc, 20.0, (self.width, self.height)
+                self.recording_path, fourcc, float(fps), (self.width, self.height)
             )
+            if not self.video_writer.isOpened():
+                self.video_writer = None
+                self.show_toast("RECORDING FAILED")
+                return
             self.is_recording = True
             self.show_toast("RECORDING STARTED")
         else:
@@ -494,6 +573,7 @@ class CanvasManager:
                 self.video_writer.release()
                 self.video_writer = None
             self.show_toast("RECORDING SAVED")
+            print(f"Recording saved as '{self.recording_path}'.")
 
     def prompt_and_load_background(self):
         """Opens a file dialog to load an image overlay."""
@@ -613,7 +693,7 @@ class CanvasManager:
 
         return final_output
 
-    def save_image(self, filename="artwork.png"):
+    def save_image(self, filename=None):
         """Saves the static background, uploaded overlay photo, persistent filter, and drawings to disk without camera feed."""
         # 1. Base background frame
         if self.background_image is not None:
@@ -682,6 +762,7 @@ class CanvasManager:
         final_composite[mask > 0] = self.canvas[mask > 0]
 
         # 5. Export to disk
+        filename = filename or new_media_path(".png")
         cv2.imwrite(filename, final_composite)
         self.show_toast("ARTWORK SAVED")
         print(f"Artwork saved successfully as '{filename}'.")

@@ -14,11 +14,9 @@ FINGER_DOWN_BEND = 65.0  # more bent than this -> finger becomes "down"
 THUMB_OUT_ENTER = 0.85
 THUMB_OUT_EXIT = 0.65
 
-# Pinch ratios (fingertip distance / palm size), with hysteresis.
-PINKY_PINCH_ENTER = 0.22
-PINKY_PINCH_EXIT = 0.32
-OK_PINCH_ENTER = 0.25
-OK_PINCH_EXIT = 0.35
+# Thumb + index pinch ratio (fingertip distance / palm size), with hysteresis.
+PINCH_ENTER = 0.25
+PINCH_EXIT = 0.35
 L_SHAPE_MIN_GAP = 0.40  # thumb must be clearly apart from index for an "L"
 
 FIST_TIP_RADIUS = 1.3  # all fingertips within this * palm of the wrist
@@ -29,6 +27,7 @@ POSE_CONFIRM_S = 0.10  # raw pose must hold this long to become the stable pose
 MATCH_DIST_FRAC = 0.25  # max wrist jump (fraction of width) to count as same hand
 STATE_TIMEOUT_S = 0.30  # forget a hand after this long unseen
 FILTER_RESET_GAP_S = 0.20  # reset smoothing if the hand was gone this long
+DUPLICATE_HAND_FRAC = 0.5  # detections closer than this * palm (mean landmark dist) are one hand
 
 FINGERS = {
     "index": (HL.INDEX_FINGER_MCP, HL.INDEX_FINGER_PIP, HL.INDEX_FINGER_TIP),
@@ -105,7 +104,6 @@ class HandState:
         self.fingers = {name: False for name in FINGERS}
         self.thumb_out = False
         self.pinch_ratio = 1.0
-        self.pinky_pinch_ratio = 1.0
 
         self.raw_pose = "other"
         self.raw_since = 0.0
@@ -145,7 +143,6 @@ class HandState:
             self.thumb_out = thumb_ratio > THUMB_OUT_ENTER
 
         self.pinch_ratio = _dist(lm[HL.THUMB_TIP], lm[HL.INDEX_FINGER_TIP]) / palm
-        self.pinky_pinch_ratio = _dist(lm[HL.THUMB_TIP], lm[HL.PINKY_TIP]) / palm
         self.fist_shape = all(
             _dist(lm[tip], wrist) < palm * FIST_TIP_RADIUS
             for (_, _, tip) in FINGERS.values()
@@ -156,13 +153,9 @@ class HandState:
         i, m, r, p = f["index"], f["middle"], f["ring"], f["pinky"]
         prev = self.raw_pose
 
-        pp_limit = PINKY_PINCH_EXIT if prev == "pinky_pinch" else PINKY_PINCH_ENTER
-        if self.pinky_pinch_ratio < pp_limit and not self.fist_shape:
-            return "pinky_pinch"
-
-        ok_limit = OK_PINCH_EXIT if prev == "ok" else OK_PINCH_ENTER
-        if self.pinch_ratio < ok_limit and m and r and p:
-            return "ok"
+        pinch_limit = PINCH_EXIT if prev == "pinch" else PINCH_ENTER
+        if self.pinch_ratio < pinch_limit and not self.fist_shape:
+            return "pinch"
 
         if self.fist_shape and not (i or m or r or p):
             return "fist"
@@ -201,11 +194,22 @@ class HandTracker:
         alive = [h for h in self.hands if now - h.last_seen < STATE_TIMEOUT_S]
         visible = []
 
+        detections = []
         for hand_landmarks in multi_hand_landmarks or []:
             pts = np.array(
                 [(l.x * width, l.y * height, l.z * width) for l in hand_landmarks.landmark],
                 dtype=np.float64,
             )
+            # MediaPipe sometimes reports one physical hand twice; drop near-copies.
+            palm = max(np.linalg.norm(pts[HL.WRIST][:2] - pts[HL.MIDDLE_FINGER_MCP][:2]), 1.0)
+            if any(
+                np.mean(np.linalg.norm(pts[:, :2] - d[:, :2], axis=1)) < DUPLICATE_HAND_FRAC * palm
+                for d in detections
+            ):
+                continue
+            detections.append(pts)
+
+        for pts in detections:
             wrist = pts[HL.WRIST][:2]
             candidates = [h for h in alive if h not in visible]
             best = min(

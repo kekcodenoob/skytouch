@@ -6,13 +6,16 @@ import mediapipe as mp
 import numpy as np
 
 from canvas import CanvasManager
+from gallery import Gallery
 from gestures import HL, HandTracker
+from icon import apply_window_icon, set_app_id
+from ui import ACCENT, Toolbar, draw_cursor
 
 # --- Timing (seconds) -------------------------------------------------------
 HAND_COUNT_CONFIRM_S = 0.15  # hand count must be stable this long before mode changes
 CLEAR_HOLD_S = 1.5  # hold fist to clear
 UNDO_HOLD_S = 0.35  # hold shaka to undo
-CYCLE_HOLD_S = 0.40  # hold rock / peace to cycle color / shape
+CYCLE_HOLD_S = 0.40  # hold rock to cycle color
 FRAME_HOLD_S = 0.30  # hold two L-shapes to start a filter box
 FRAME_EXIT_GRACE_S = 0.40  # frame must be gone this long before it can re-trigger
 ACTION_COOLDOWN_S = 0.60  # minimum gap between any two discrete actions
@@ -21,6 +24,10 @@ ACTION_COOLDOWN_S = 0.60  # minimum gap between any two discrete actions
 DRAW_LAG_FRAMES = 3  # points held back before committing; dropped when a stroke ends
 MAX_JUMP_FRAC = 0.15  # break the line if the tip jumps more than this * width
 DRAW_POSES = ("point", "l_shape")
+WINDOW = "Skytouch"
+TOOLBAR_MARGIN = 16  # px around the toolbar where drawing is also blocked
+MIN_SHAPE_PX = 30  # shapes dragged shorter than this are discarded...
+MIN_SHAPE_PALM = 0.4  # ...or shorter than this * palm size, whichever is larger
 
 
 class SkytouchApp:
@@ -64,7 +71,7 @@ class SkytouchApp:
         self.stroke_pending = deque()
         self.stroke_saved = False
 
-        # Pinky-pinch shape drag
+        # Thumb + index pinch shape drag
         self.pinch_start = None
         self.pinch_last = None
 
@@ -74,12 +81,23 @@ class SkytouchApp:
         self.frame_lost_since = None
 
         # Overlay manipulation
-        self.prev_ok_pos = None
-        self.prev_ok_dist = None
+        self.prev_grab_pos = None
+        self.prev_grab_dist = None
 
         # Per-frame UI state
         self.clear_progress = 0.0
         self.pose_label = "-"
+
+        # Toolbar, gallery, pause
+        self.toolbar = Toolbar(width, height)
+        self.show_toolbar = True
+        self.gallery = Gallery(width, height)
+        self.paused = False
+        self.fullscreen = False
+
+        # Measured loop rate, so recordings play back at real speed
+        self.fps = 20.0
+        self.prev_t = None
 
     def print_terminal_instructions(self):
         print("""
@@ -89,25 +107,68 @@ class SkytouchApp:
 
 --- HAND GESTURES ---
   [1] Freehand Draw        : Raise Index Finger only
-  [2] Drag Bounding Shape  : Touch Thumb to Pinky, drag, release to place
-  [3] Move Overlay Image   : 1 Hand OK Gesture and Drag (image loaded)
-  [4] Resize Overlay Image : 2 Hands OK Gestures Spread/Pinch
+  [2] Drag Bounding Shape  : Pinch Thumb + Index, drag, release to place
+  [3] Move Overlay Image   : Index + Middle up (Peace Sign), drag (image loaded)
+  [4] Resize Overlay Image : Peace Sign on BOTH hands, spread/close
   [5] Cycle Color          : Hold Index + Pinky up
-  [6] Cycle Shape Mode     : Hold Index + Middle up (Peace Sign)
-  [7] Undo Action          : Hold Pinky + Thumb out (Shaka)
-  [8] Clear Canvas         : Hold a closed Fist (~1.5s, bar fills)
-  [9] Viewport Filter Box  : Make an "L" (thumb + index) with BOTH hands
+  [6] Undo Action          : Hold Pinky + Thumb out (Shaka)
+  [7] Clear Canvas         : Hold a closed Fist (~1.5s, bar fills)
+  [8] Viewport Filter Box  : Make an "L" (thumb + index) with BOTH hands
   Open palm = idle, nothing happens. Held gestures fire once per hold.
 
+--- TOOLBAR (top edge) ---
+  Point at a button and hold still (~0.6s) to press it. Drawing is
+  disabled while your fingertip is over the toolbar.
+
 --- KEYBOARD SHORTCUTS ---
+  [p] Pause / Resume Canvas (gestures off, toolbar still works)
+  [g] Open / Close Gallery  (a / d = prev / next, space = play/pause,
+                             e = edit image, Esc = back; mouse clicks work too)
+  [t] Show / Hide Toolbar
+  [f] Toggle Fullscreen     (Esc also leaves fullscreen)
   [b] Cycle Brush Style
   [c] Clear Canvas
   [u] Upload/Prompt Background Overlay Image
-  [r] Toggle Video Recording
-  [s] Save Canvas Artwork
+  [r] Toggle Video Recording (saves/*.mp4)
+  [s] Save Canvas Artwork    (saves/*.png)
   [q] Quit Application
 ===================================================================
 """)
+
+    # ------------------------------------------------------------------ actions
+    def _do(self, action):
+        """Runs a named action. Shared by the toolbar and keyboard shortcuts."""
+        if action == "color":
+            self.color_index = (self.color_index + 1) % len(self.colors)
+            self.canvas_mgr.show_toast(f"COLOR: {self.color_names[self.color_index].upper()}")
+        elif action == "shape":
+            self.shape_index = (self.shape_index + 1) % len(self.shape_modes)
+            self.canvas_mgr.show_toast(f"SHAPE: {self.shape_modes[self.shape_index].upper()}")
+        elif action == "brush":
+            self.canvas_mgr.cycle_brush_mode()
+        elif action == "undo":
+            self._end_stroke()
+            self.canvas_mgr.undo()
+        elif action == "clear":
+            self._end_stroke()
+            self._cancel_pinch()
+            self.canvas_mgr.clear()
+            self.canvas_mgr.show_toast("CANVAS CLEARED")
+        elif action == "save":
+            self.canvas_mgr.save_image()
+        elif action == "record":
+            self.canvas_mgr.toggle_recording(fps=round(min(max(self.fps, 5.0), 60.0)))
+        elif action == "gallery":
+            self._end_stroke()
+            self._cancel_pinch()
+            self.gallery.open()
+        elif action == "pause":
+            self.paused = not self.paused
+            self._end_stroke()
+            self._cancel_pinch()
+            self.canvas_mgr.show_toast("CANVAS PAUSED" if self.paused else "CANVAS RESUMED")
+        elif action == "toolbar":
+            self.show_toolbar = not self.show_toolbar
 
     # ------------------------------------------------------------------ helpers
     def _hold(self, hand, hold_s, now, preview=None, color=(255, 255, 255)):
@@ -128,6 +189,7 @@ class SkytouchApp:
     def _extend_stroke(self, pt, color):
         if not self.stroke_active:
             self.stroke_active = True
+            self.canvas_mgr.ink_width = None  # INK brush starts each stroke fresh
             self.stroke_saved = False
             self.stroke_last = None
             self.stroke_pending.clear()
@@ -150,9 +212,8 @@ class SkytouchApp:
     def _draw_pending(self, preview, color):
         pts = ([self.stroke_last] if self.stroke_last else []) + list(self.stroke_pending)
         if len(pts) >= 2:
-            if self.canvas_mgr.brush_mode == "ERASER":
-                color = (128, 128, 128)
-            cv2.polylines(preview, [np.array(pts, np.int32)], False, color, 6)
+            color = self.canvas_mgr.preview_color(color)
+            cv2.polylines(preview, [np.array(pts, np.int32)], False, color, 6, cv2.LINE_AA)
 
     def _end_stroke(self):
         # Pending points are the tail where the finger was curling away: discard.
@@ -182,63 +243,70 @@ class SkytouchApp:
                 cv2.ellipse(preview, ((x1 + x2) // 2, (y1 + y2) // 2), (ax, ay), 0, 0, 360, color, 3)
 
     # ----------------------------------------------------------------- handlers
-    def _handle_one_hand(self, hand, now, preview):
+    def _handle_one_hand(self, hand, now, preview, in_bar=False):
+        """in_bar: the hand is over the toolbar, so nothing may be drawn."""
         pose, raw = hand.pose, hand.raw_pose
         tip = hand.pt(HL.INDEX_FINGER_TIP)
         color = self.colors[self.color_index]
         shape = self.shape_modes[self.shape_index]
         self.pose_label = pose
 
-        if pose not in DRAW_POSES:
+        if pose not in DRAW_POSES or in_bar:
             self._end_stroke()
-        if pose != "pinky_pinch" and self.pinch_start is not None:
-            self.canvas_mgr.commit_drag_shape(shape, self.pinch_start, self.pinch_last, color)
+        if pose != "pinch" and self.pinch_start is not None:
+            s, e = self.pinch_start, self.pinch_last
+            # Ignore tiny drags (e.g. an idle hand pinching and releasing),
+            # and never drop a shape while the hand is over the toolbar.
+            if not in_bar and np.hypot(e[0] - s[0], e[1] - s[1]) >= max(MIN_SHAPE_PX, MIN_SHAPE_PALM * hand.palm):
+                self.canvas_mgr.commit_drag_shape(shape, s, e, color)
             self._cancel_pinch()
-        if pose != "ok":
-            self.prev_ok_pos = None
+        if pose != "peace":
+            self.prev_grab_pos = None
 
         if pose == "fist":
             self.clear_progress = min(1.0, (now - hand.pose_since) / CLEAR_HOLD_S)
             if self._hold(hand, CLEAR_HOLD_S, now):
-                self.canvas_mgr.clear()
-                self.canvas_mgr.show_toast("CANVAS CLEARED")
+                self._do("clear")
             elif self.fired_for == (hand.id, hand.pose_since):
                 self.clear_progress = 0.0
 
-        elif pose == "pinky_pinch":
-            if raw == "pinky_pinch":  # only track while truly pinching (no release drift)
+        elif pose == "pinch":
+            if in_bar:
+                pass  # shape is frozen (not started, moved or previewed) over the toolbar
+            elif raw == "pinch":  # only track while truly pinching (no release drift)
+                # Midpoint of thumb + index tips: steadier than the index tip alone
+                t, i = hand.pt(HL.THUMB_TIP), tip
+                grab = ((t[0] + i[0]) // 2, (t[1] + i[1]) // 2)
                 if self.pinch_start is None:
-                    self.pinch_start = tip
-                self.pinch_last = tip
-            if self.pinch_start is not None:
+                    self.pinch_start = grab
+                self.pinch_last = grab
+            if self.pinch_start is not None and not in_bar:
                 self._draw_shape_preview(preview, shape, self.pinch_start, self.pinch_last, color)
 
         elif pose in DRAW_POSES:
-            if raw in DRAW_POSES:
+            if in_bar:
+                self.pose_label = "toolbar"
+            elif raw in DRAW_POSES:
                 self._extend_stroke(tip, color)
             self._draw_pending(preview, color)
 
         elif pose == "shaka":
             if self._hold(hand, UNDO_HOLD_S, now, preview):
-                self.canvas_mgr.undo()
+                self._do("undo")
 
         elif pose == "rock":
             if self._hold(hand, CYCLE_HOLD_S, now, preview, color):
-                self.color_index = (self.color_index + 1) % len(self.colors)
-                self.canvas_mgr.show_toast(f"COLOR: {self.color_names[self.color_index].upper()}")
+                self._do("color")
 
-        elif pose == "peace":
-            if self._hold(hand, CYCLE_HOLD_S, now, preview):
-                self.shape_index = (self.shape_index + 1) % len(self.shape_modes)
-                self.canvas_mgr.show_toast(f"SHAPE: {self.shape_modes[self.shape_index].upper()}")
-
-        elif pose == "ok" and self.canvas_mgr.raw_overlay is not None:
-            if raw == "ok":
-                if self.prev_ok_pos is not None:
-                    self.canvas_mgr.move_overlay(tip[0] - self.prev_ok_pos[0], tip[1] - self.prev_ok_pos[1])
-                self.prev_ok_pos = tip
+        elif pose == "peace" and self.canvas_mgr.raw_overlay is not None:
+            if raw == "peace":
+                # Follow the middle knuckle: steadier than a fingertip
+                grab = hand.pt(HL.MIDDLE_FINGER_MCP)
+                if self.prev_grab_pos is not None:
+                    self.canvas_mgr.move_overlay(grab[0] - self.prev_grab_pos[0], grab[1] - self.prev_grab_pos[1])
+                self.prev_grab_pos = grab
             else:
-                self.prev_ok_pos = None
+                self.prev_grab_pos = None
 
     def _handle_two_hands(self, hands, now):
         left, right = sorted(hands, key=lambda h: h.lm[HL.WRIST][0])
@@ -246,7 +314,9 @@ class SkytouchApp:
         has_overlay = self.canvas_mgr.raw_overlay is not None
 
         # --- Filter frame: both hands in an L-shape ---
-        both_l = left.pose == "l_shape" and right.pose == "l_shape"
+        # Wrists must be clearly apart, so one hand detected twice can't frame a filter.
+        apart = np.linalg.norm(left.lm[HL.WRIST][:2] - right.lm[HL.WRIST][:2]) > 1.5 * max(left.palm, right.palm)
+        both_l = apart and left.pose == "l_shape" and right.pose == "l_shape"
         if both_l:
             self.frame_lost_since = None
             if not self.frame_active and now - max(left.pose_since, right.pose_since) >= FRAME_HOLD_S:
@@ -268,24 +338,24 @@ class SkytouchApp:
             elif now - self.frame_lost_since >= FRAME_EXIT_GRACE_S:
                 self.frame_active = False
 
-        # --- Overlay: OK gestures ---
-        oks = [h for h in (left, right) if h.pose == "ok" and h.raw_pose == "ok"]
-        if has_overlay and len(oks) == 2:
-            a, b = oks[0].pt(HL.INDEX_FINGER_TIP), oks[1].pt(HL.INDEX_FINGER_TIP)
+        # --- Overlay: peace-sign grab (1 hand = move, 2 hands = scale) ---
+        grabs = [h for h in (left, right) if h.pose == "peace" and h.raw_pose == "peace"]
+        if has_overlay and len(grabs) == 2:
+            a, b = grabs[0].pt(HL.MIDDLE_FINGER_MCP), grabs[1].pt(HL.MIDDLE_FINGER_MCP)
             dist = float(np.hypot(a[0] - b[0], a[1] - b[1]))
-            if self.prev_ok_dist is not None:
-                self.canvas_mgr.resize_overlay((dist - self.prev_ok_dist) * 0.005)
-            self.prev_ok_dist = dist
-            self.prev_ok_pos = None
-        elif has_overlay and len(oks) == 1:
-            tip = oks[0].pt(HL.INDEX_FINGER_TIP)
-            if self.prev_ok_pos is not None:
-                self.canvas_mgr.move_overlay(tip[0] - self.prev_ok_pos[0], tip[1] - self.prev_ok_pos[1])
-            self.prev_ok_pos = tip
-            self.prev_ok_dist = None
+            if self.prev_grab_dist is not None:
+                self.canvas_mgr.resize_overlay((dist - self.prev_grab_dist) * 0.005)
+            self.prev_grab_dist = dist
+            self.prev_grab_pos = None
+        elif has_overlay and len(grabs) == 1:
+            tip = grabs[0].pt(HL.MIDDLE_FINGER_MCP)
+            if self.prev_grab_pos is not None:
+                self.canvas_mgr.move_overlay(tip[0] - self.prev_grab_pos[0], tip[1] - self.prev_grab_pos[1])
+            self.prev_grab_pos = tip
+            self.prev_grab_dist = None
         else:
-            self.prev_ok_pos = None
-            self.prev_ok_dist = None
+            self.prev_grab_pos = None
+            self.prev_grab_dist = None
 
     def _update_hand_count(self, n, now):
         if n != self.raw_count:
@@ -300,8 +370,33 @@ class SkytouchApp:
             if old == 2:  # leaving two-hand mode
                 self.frame_active = False
                 self.frame_lost_since = None
-            self.prev_ok_pos = None
-            self.prev_ok_dist = None
+            self.prev_grab_pos = None
+            self.prev_grab_dist = None
+
+    # ------------------------------------------------------------ window/mouse
+    def _on_mouse(self, event, x, y, flags, param):
+        if event == cv2.EVENT_LBUTTONDOWN:
+            self.mouse_clicks.append((x, y))
+
+    def _set_fullscreen(self, on):
+        self.fullscreen = on
+        cv2.setWindowProperty(
+            WINDOW, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN if on else cv2.WINDOW_NORMAL
+        )
+        if not on:
+            cv2.resizeWindow(WINDOW, self.width, self.height)
+
+    def _handle_gallery_result(self, result):
+        if isinstance(result, tuple) and result[0] == "edit":
+            if self.canvas_mgr.load_into_canvas(result[1]):
+                self.paused = False
+                self.canvas_mgr.show_toast("IMAGE LOADED - KEEP DRAWING")
+
+    def _show(self, img):
+        cv2.imshow(WINDOW, img)
+        if not self.icon_applied:  # the native window exists after the first imshow
+            self.icon_applied = True
+            apply_window_icon(WINDOW)
 
     # --------------------------------------------------------------------- loop
     def run(self):
@@ -310,12 +405,21 @@ class SkytouchApp:
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
 
+        set_app_id()
+        cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
+        cv2.setMouseCallback(WINDOW, self._on_mouse)
+        self.mouse_clicks = []
+        self.icon_applied = False
+        self._set_fullscreen(True)
+
         while cap.isOpened():
             success, frame = cap.read()
             if not success:
                 continue
 
             now = time.monotonic()
+            if frame.shape[1] != self.width or frame.shape[0] != self.height:
+                frame = cv2.resize(frame, (self.width, self.height))  # camera ignored our size
             frame = cv2.flip(frame, 1)
             frame = cv2.convertScaleAbs(frame, alpha=1.0, beta=15)
             preview_layer = np.zeros_like(frame)
@@ -330,11 +434,57 @@ class SkytouchApp:
 
             visible = self.tracker.update(results.multi_hand_landmarks, self.width, self.height, now)
             self._update_hand_count(len(visible), now)
+            if self.prev_t is not None and now > self.prev_t:
+                self.fps = 0.9 * self.fps + 0.1 * (1.0 / (now - self.prev_t))
+            self.prev_t = now
 
+            hand = None
             if self.hand_count == 1 and visible:
                 hand = next((h for h in visible if h.id == self.primary_id), visible[0])
                 self.primary_id = hand.id
-                self._handle_one_hand(hand, now, preview_layer)
+
+            # Pointing fingertip doubles as the UI cursor (toolbar + gallery)
+            cursor = None
+            if hand is not None and hand.pose in DRAW_POSES and hand.raw_pose in DRAW_POSES:
+                cursor = hand.pt(HL.INDEX_FINGER_TIP)
+
+            # --- Gallery takes over the whole screen ---
+            clicks, self.mouse_clicks = self.mouse_clicks, []
+            if self.gallery.active:
+                self._handle_gallery_result(self.gallery.update(cursor, now))
+                for pt in clicks:
+                    if self.gallery.active:
+                        self._handle_gallery_result(self.gallery.click(pt))
+                self._show(self.gallery.render(now))
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord("q") or cv2.getWindowProperty(WINDOW, cv2.WND_PROP_VISIBLE) < 1:
+                    break
+                if key == ord("f"):
+                    self._set_fullscreen(not self.fullscreen)
+                elif key != 255:
+                    self._handle_gallery_result(self.gallery.key(key))
+                continue
+
+            # --- Toolbar (always shown while paused so you can resume hands-free) ---
+            toolbar_on = self.show_toolbar or self.paused
+            bar_cursor = cursor if toolbar_on and self.toolbar.contains(cursor) else None
+            pressed = self.toolbar.update(bar_cursor, now)
+            if pressed:
+                self._do(pressed)
+            for pt in clicks:  # mouse clicks on toolbar buttons
+                name = self.toolbar.hit(pt) if toolbar_on else None
+                if name:
+                    self._do(name)
+
+            if self.paused:
+                self.pose_label = "paused"
+            elif hand is not None:
+                # Nothing gets drawn while the index or thumb tip is over the toolbar
+                in_bar = toolbar_on and (
+                    self.toolbar.contains(hand.pt(HL.INDEX_FINGER_TIP), TOOLBAR_MARGIN)
+                    or self.toolbar.contains(hand.pt(HL.THUMB_TIP), TOOLBAR_MARGIN)
+                )
+                self._handle_one_hand(hand, now, preview_layer, in_bar)
             elif self.hand_count == 2 and len(visible) == 2:
                 self._handle_two_hands(visible, now)
             elif self.hand_count == 1 and self.stroke_active:
@@ -346,6 +496,7 @@ class SkytouchApp:
                 self.shape_modes[self.shape_index],
                 self.colors[self.color_index],
                 self.clear_progress,
+                top=self.toolbar.hud_offset if toolbar_on else 0,
             )
             cv2.putText(
                 final_frame,
@@ -356,28 +507,41 @@ class SkytouchApp:
                 (200, 200, 200),
                 1,
             )
+            if toolbar_on:
+                self.toolbar.draw(final_frame, {
+                    "color": self.colors[self.color_index],
+                    "shape": self.shape_modes[self.shape_index],
+                    "brush": self.canvas_mgr.brush_mode,
+                    "recording": self.canvas_mgr.is_recording,
+                    "paused": self.paused,
+                })
+                if bar_cursor is not None:
+                    draw_cursor(final_frame, bar_cursor, self.toolbar.progress)
+            if self.paused:
+                msg = "PAUSED - hover RESUME or press P"
+                (tw, _), _ = cv2.getTextSize(msg, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
+                x = (self.width - tw) // 2
+                y = 88 + self.toolbar.hud_offset
+                cv2.rectangle(final_frame, (x - 12, y), (x + tw + 12, y + 34), (0, 0, 0), -1)
+                cv2.putText(final_frame, msg, (x, y + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, ACCENT, 2, cv2.LINE_AA)
 
-            cv2.imshow("Skytouch", final_frame)
+            self._show(final_frame)
             key = cv2.waitKey(1) & 0xFF
-            if key == ord("q"):
+            if key == ord("q") or cv2.getWindowProperty(WINDOW, cv2.WND_PROP_VISIBLE) < 1:
                 break
-            elif key == ord("r"):
-                self.canvas_mgr.toggle_recording()
-                self.canvas_mgr.show_toast(
-                    "RECORDING STARTED" if self.canvas_mgr.is_recording else "RECORDING STOPPED"
-                )
-            elif key == ord("s"):
-                self.canvas_mgr.save_image()
-                self.canvas_mgr.show_toast("CANVAS SAVED")
+            elif key == ord("f"):
+                self._set_fullscreen(not self.fullscreen)
+            elif key == 27 and self.fullscreen:
+                self._set_fullscreen(False)
             elif key == ord("u"):
                 self.canvas_mgr.prompt_and_load_background()
-            elif key == ord("b"):
-                self.canvas_mgr.cycle_brush_mode()
-            elif key == ord("c"):
-                self._end_stroke()
-                self._cancel_pinch()
-                self.canvas_mgr.clear()
-                self.canvas_mgr.show_toast("CANVAS CLEARED")
+            else:
+                action = {
+                    ord("r"): "record", ord("s"): "save", ord("b"): "brush", ord("c"): "clear",
+                    ord("p"): "pause", ord("g"): "gallery", ord("t"): "toolbar",
+                }.get(key)
+                if action:
+                    self._do(action)
 
         cap.release()
         cv2.destroyAllWindows()
