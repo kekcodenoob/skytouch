@@ -8,17 +8,19 @@ Skytouch is a real-time computer vision application that turns hand gestures int
 
 ### Hand Gestures
 * **Freehand Draw:** Raise **Index Finger** only.
-* **Drag Bounding Shape:** **Pinch** (Thumb + Pinky Finger) and drag across the screen.
-* **Drag Uploaded Image:** **OK Sign** (Thumb + Index Finger/OK hand sign) and drag across the screen.
-* **Scale Uploaded Image:** **Two Hands Move Closer/Farther** (Thumb + Index Finger/OK hand sign) and put hands closer to scale down/farther apart to scale up.
-* **Cycle Color:** Raise **Index + Pinky** fingers (Hold).
-* **Cycle Shape Mode:** Raise **Index + Middle** fingers (Hold).
-* **Cycle Brush Style:** Raise **Index + Middle + Ring** fingers (Hold).
-* **Undo Action:** **Pinky + Thumb** out (Surfer / Shaka gesture).
-* **Clear Canvas:** Hold a closed **Fist** (fills clear progress bar).
-* **Viewport Filter Box:** Use **Two Hands** (index finger and thumb on each hand) to create a boundary region for applying live visual filters.
+* **Drag Bounding Shape:** **Pinch** (Thumb + Pinky Finger), drag, and release to place.
+* **Drag Uploaded Image:** **OK Sign** (Thumb + Index touching) and drag across the screen (only while an image is loaded).
+* **Scale Uploaded Image:** **OK Sign with both hands**. Move your hands closer together to shrink the image, or farther apart to enlarge it.
+* **Cycle Color:** Hold **Index + Pinky** fingers up.
+* **Cycle Shape Mode:** Hold **Index + Middle** fingers up (Peace sign).
+* **Undo Action:** Hold **Pinky + Thumb** out (Shaka).
+* **Clear Canvas:** Hold a closed **Fist** for ~1.5s (progress bar fills).
+* **Viewport Filter Box:** Make an **"L"** (thumb + index) with **both hands** to frame a region. Each new frame cycles the live filter.
+* **Idle:** An open palm does nothing. Held gestures fire once per hold, so release and hold again to repeat. A ring around your fingertip shows hold progress, and the current gesture is shown in the bottom-left.
 
 ### Keyboard Shortcuts
+* `b` – Cycle brush style.
+* `c` – Clear canvas.
 * `r` – Toggle video recording.
 * `u` – Upload image from computer for editing.
 * `s` – Save current canvas artwork to disk.
