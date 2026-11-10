@@ -50,14 +50,18 @@ Skytouch is quick to learn and people want to come back, but accidental gestures
 * **Idle:** An open palm does nothing. Held gestures fire once per hold, so release and hold again to repeat. A ring around your fingertip shows hold progress, and the current gesture is shown in the bottom-left.
 
 ### Live Filters
-11 filters you can apply to any framed region: grayscale, invert, sepia, Sobel edges, blur, pixelate, thermal, glass, ASCII, night vision, and kaleidoscope. The filter stays in place and is included when you save.
+Pick one from the toolbar's filter menu (it restyles the box already on screen, or is used for your next frame). Framing again without picking cycles to the next filter. 11 filters you can apply to any framed region: grayscale, invert, sepia, Sobel edges, blur, pixelate, thermal, glass, ASCII, night vision, and kaleidoscope. The filter stays in place and is included when you save.
 
 ### On-Screen Toolbar
-A button strip along the top edge: color, shape, brush, undo, clear, save, record, gallery, and pause. **Point** at a button and hold still for about 0.6s to press it (a bar fills as you hover). Your finger doesn't draw while it's over the toolbar.
+A button strip along the top edge: color, shape, brush, filter, eraser, undo, clear, save, record, gallery, and pause. **Point** at a button and hold still for about 0.6s to press it (a bar fills as you hover). Your finger doesn't draw while it's over the toolbar.
+
+**Brush** and **Filter** open a pop-up menu with a preview of every option: brushes are shown as a sample stroke in your current color, and filters are shown live on your camera feed. Hover a tile (or click it) to pick it. Hover **Close**, click outside the menu, or press `Esc` to dismiss it. Drawing and gestures are paused while a menu is open.
 
 ### Brush Styles
-Cycle with the toolbar's brush button or `b`:
-**Solid**, **Neon**, **Rainbow** (color shifts as you draw), **Ink** (thinner when you move fast, thicker when slow), **Calligraphy** (slanted nib, thick or thin depending on direction), **Spray** (spray-paint dots), **Sparkle** (line with glitter and stars), **Dashed**, and **Eraser**.
+Pick from the toolbar's brush menu, or cycle with `b`:
+**Solid**, **Neon**, **Rainbow** (color shifts as you draw), **Ink** (thinner when you move fast, thicker when slow), **Calligraphy** (slanted nib, thick or thin depending on direction), **Spray** (spray-paint dots), **Sparkle** (line with glitter and stars), and **Dashed**.
+
+**Eraser** is its own toggle: press the toolbar's eraser button or `e` to erase, and press it again to go back to the brush you were using.
 
 ### Pause
 Pause the canvas (toolbar or `p`) to move around freely. All gestures are off while paused, and the toolbar stays visible so you can resume hands-free.
@@ -76,7 +80,8 @@ Skytouch opens fullscreen with its own icon in the title bar and taskbar. Press 
 * `g` – Open / close the gallery (`a` / `d` = previous / next, `space` = play/pause, `e` = edit image, `Esc` = back).
 * `f` – Toggle fullscreen.
 * `t` – Show / hide the toolbar.
-* `b` – Cycle brush style (solid, neon, dashed, eraser).
+* `b` – Cycle brush style (the toolbar's brush button opens the brush menu instead).
+* `e` – Toggle the eraser on / off.
 * `c` – Clear canvas.
 * `r` – Toggle video recording (MP4).
 * `u` – Upload image from computer for editing.

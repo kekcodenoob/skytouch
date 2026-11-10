@@ -9,7 +9,8 @@ from canvas import CanvasManager
 from gallery import Gallery
 from gestures import HL, HandTracker
 from icon import apply_window_icon, set_app_id
-from ui import ACCENT, Toolbar, draw_cursor
+from canvas import BRUSH_MODES
+from ui import ACCENT, FILTER_SHORT, Picker, Toolbar, draw_cursor
 
 # --- Timing (seconds) -------------------------------------------------------
 HAND_COUNT_CONFIRM_S = 0.15  # hand count must be stable this long before mode changes
@@ -17,6 +18,7 @@ CLEAR_HOLD_S = 1.5  # hold fist to clear
 UNDO_HOLD_S = 0.35  # hold shaka to undo
 CYCLE_HOLD_S = 0.40  # hold rock to cycle color
 FRAME_HOLD_S = 0.30  # hold two L-shapes to start a filter box
+FILTER_PREVIEWS_PER_FRAME = 4  # live filter-menu previews refreshed per frame (round-robin)
 FRAME_EXIT_GRACE_S = 0.40  # frame must be gone this long before it can re-trigger
 ACTION_COOLDOWN_S = 0.60  # minimum gap between any two discrete actions
 
@@ -77,6 +79,7 @@ class SkytouchApp:
 
         # Two-hand filter frame
         self.active_filter_index = 0
+        self.filter_chosen = True  # next filter frame uses active_filter_index as-is (no cycling)
         self.frame_active = False
         self.frame_lost_since = None
 
@@ -92,6 +95,12 @@ class SkytouchApp:
         self.toolbar = Toolbar(width, height)
         self.show_toolbar = True
         self.gallery = Gallery(width, height)
+        # Pop-up brush / filter menus under the toolbar
+        self.picker = Picker(width, top=self.toolbar.hud_offset + 6)
+        self.brush_previews = {}  # cached per color
+        self.brush_preview_color = None
+        self.filter_previews = {}
+        self.frame_no = 0
         self.paused = False
         self.fullscreen = False
 
@@ -126,7 +135,8 @@ class SkytouchApp:
                              e = edit image, Esc = back; mouse clicks work too)
   [t] Show / Hide Toolbar
   [f] Toggle Fullscreen     (Esc also leaves fullscreen)
-  [b] Cycle Brush Style
+  [b] Cycle Brush Style     (toolbar BRUSH / FILTER buttons open picker menus)
+  [e] Toggle Eraser
   [c] Clear Canvas
   [u] Upload/Prompt Background Overlay Image
   [r] Toggle Video Recording (saves/*.mp4)
@@ -144,8 +154,16 @@ class SkytouchApp:
         elif action == "shape":
             self.shape_index = (self.shape_index + 1) % len(self.shape_modes)
             self.canvas_mgr.show_toast(f"SHAPE: {self.shape_modes[self.shape_index].upper()}")
-        elif action == "brush":
+        elif action == "brush":  # toolbar: open the brush menu
+            self._toggle_menu("brush")
+        elif action == "filter":  # toolbar: open the filter menu
+            self._toggle_menu("filter")
+        elif action == "next_brush":  # `b` key: quick cycle
+            self._end_stroke()
             self.canvas_mgr.cycle_brush_mode()
+        elif action == "eraser":
+            self._end_stroke()
+            self.canvas_mgr.toggle_eraser()
         elif action == "undo":
             self._end_stroke()
             self.canvas_mgr.undo()
@@ -161,6 +179,7 @@ class SkytouchApp:
         elif action == "gallery":
             self._end_stroke()
             self._cancel_pinch()
+            self.picker.close()
             self.gallery.open()
         elif action == "pause":
             self.paused = not self.paused
@@ -169,6 +188,60 @@ class SkytouchApp:
             self.canvas_mgr.show_toast("CANVAS PAUSED" if self.paused else "CANVAS RESUMED")
         elif action == "toolbar":
             self.show_toolbar = not self.show_toolbar
+
+    # -------------------------------------------------------------------- menus
+    def _toggle_menu(self, kind):
+        if self.picker.kind == kind:
+            self.picker.close()
+            return
+        self._end_stroke()
+        self._cancel_pinch()
+        if kind == "brush":
+            self.picker.open("brush", "CHOOSE A BRUSH", BRUSH_MODES, {"CALLIGRAPHY": "CALLIG."})
+        else:
+            names = self.canvas_mgr.filter_names
+            self.picker.open("filter", "CHOOSE A FILTER  (frame it with two L-shapes)", names, FILTER_SHORT)
+            self.filter_previews = {}
+
+    def _menu_choice(self, choice):
+        if choice is None:
+            return
+        if choice == "close":
+            self.picker.close()
+            return
+        if self.picker.kind == "brush":
+            self.canvas_mgr.set_brush(choice)
+        elif self.picker.kind == "filter":
+            idx = self.canvas_mgr.filter_names.index(choice)
+            self.active_filter_index = idx
+            self.filter_chosen = True
+            if self.canvas_mgr.active_filter_pts is not None:  # restyle the box already on screen
+                self.canvas_mgr.save_state()
+                self.canvas_mgr.active_filter_idx = idx
+                self.canvas_mgr.show_toast(f"FILTER: {choice}")
+            else:
+                self.canvas_mgr.show_toast(f"FILTER: {choice} - FRAME WITH TWO L'S")
+        self.picker.close()
+
+    def _menu_previews(self, frame):
+        """Preview images for the open menu: brushes in the current color, filters on the live camera."""
+        tw, th = Picker.TILE_W, Picker.PREVIEW_H
+        if self.picker.kind == "brush":
+            color = self.colors[self.color_index]
+            if color != self.brush_preview_color:
+                self.brush_preview_color = color
+                self.brush_previews = {m: self.canvas_mgr.brush_preview(m, color, tw, th) for m in BRUSH_MODES}
+            return self.brush_previews, self.canvas_mgr.last_brush
+        names = self.canvas_mgr.filter_names
+        thumb = cv2.resize(frame, (tw, th), interpolation=cv2.INTER_AREA)
+        if not self.filter_previews:  # first frame: render all of them once
+            todo = names
+        else:  # then refresh a few per frame so the live previews never stall the loop
+            start = self.frame_no * FILTER_PREVIEWS_PER_FRAME
+            todo = [names[(start + i) % len(names)] for i in range(FILTER_PREVIEWS_PER_FRAME)]
+        for n in todo:
+            self.filter_previews[n] = self.canvas_mgr.filter_image(thumb.copy(), n)
+        return self.filter_previews, self.canvas_mgr.filter_names[self.active_filter_index]
 
     # ------------------------------------------------------------------ helpers
     def _hold(self, hand, hold_s, now, preview=None, color=(255, 255, 255)):
@@ -322,7 +395,10 @@ class SkytouchApp:
             if not self.frame_active and now - max(left.pose_since, right.pose_since) >= FRAME_HOLD_S:
                 self.frame_active = True
                 self.canvas_mgr.save_state()
-                self.active_filter_index = (self.active_filter_index + 1) % len(self.canvas_mgr.filter_names)
+                if self.filter_chosen:  # use the filter picked from the menu
+                    self.filter_chosen = False
+                else:
+                    self.active_filter_index = (self.active_filter_index + 1) % len(self.canvas_mgr.filter_names)
                 self.canvas_mgr.show_toast(f"FILTER: {self.canvas_mgr.filter_names[self.active_filter_index]}".upper())
             if self.frame_active and left.raw_pose == "l_shape" and right.raw_pose == "l_shape":
                 self.canvas_mgr.active_filter_pts = [
@@ -426,6 +502,8 @@ class SkytouchApp:
             self.clear_progress = 0.0
             self.pose_label = "-"
 
+            self.frame_no += 1
+            clean_frame = frame.copy() if self.picker.kind == "filter" else None  # menu previews, no landmarks
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             results = self.hands.process(rgb_frame)
 
@@ -471,12 +549,21 @@ class SkytouchApp:
             pressed = self.toolbar.update(bar_cursor, now)
             if pressed:
                 self._do(pressed)
-            for pt in clicks:  # mouse clicks on toolbar buttons
+            menu_cursor = cursor if bar_cursor is None and self.picker.active else None
+            if self.picker.active:
+                self._menu_choice(self.picker.update(menu_cursor, now))
+            for pt in clicks:  # mouse clicks: toolbar buttons first, then the open menu
                 name = self.toolbar.hit(pt) if toolbar_on else None
                 if name:
                     self._do(name)
+                elif self.picker.active:
+                    self._menu_choice(self.picker.click(pt))
 
-            if self.paused:
+            if self.picker.active:
+                self.pose_label = "menu"  # no drawing or gestures while a menu is open
+                self._end_stroke()
+                self._cancel_pinch()
+            elif self.paused:
                 self.pose_label = "paused"
             elif hand is not None:
                 # Nothing gets drawn while the index or thumb tip is over the toolbar
@@ -512,11 +599,19 @@ class SkytouchApp:
                     "color": self.colors[self.color_index],
                     "shape": self.shape_modes[self.shape_index],
                     "brush": self.canvas_mgr.brush_mode,
+                    "last_brush": self.canvas_mgr.last_brush,
+                    "filter": self.canvas_mgr.filter_names[self.active_filter_index],
+                    "menu": self.picker.kind,
                     "recording": self.canvas_mgr.is_recording,
                     "paused": self.paused,
                 })
                 if bar_cursor is not None:
                     draw_cursor(final_frame, bar_cursor, self.toolbar.progress)
+            if self.picker.active:
+                previews, current = self._menu_previews(clean_frame if clean_frame is not None else frame)
+                self.picker.draw(final_frame, previews, current)
+                if menu_cursor is not None:
+                    draw_cursor(final_frame, menu_cursor, self.picker.progress)
             if self.paused:
                 msg = "PAUSED - hover RESUME or press P"
                 (tw, _), _ = cv2.getTextSize(msg, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
@@ -531,13 +626,16 @@ class SkytouchApp:
                 break
             elif key == ord("f"):
                 self._set_fullscreen(not self.fullscreen)
+            elif key == 27 and self.picker.active:
+                self.picker.close()
             elif key == 27 and self.fullscreen:
                 self._set_fullscreen(False)
             elif key == ord("u"):
                 self.canvas_mgr.prompt_and_load_background()
             else:
                 action = {
-                    ord("r"): "record", ord("s"): "save", ord("b"): "brush", ord("c"): "clear",
+                    ord("r"): "record", ord("s"): "save", ord("b"): "next_brush", ord("e"): "eraser",
+                    ord("c"): "clear",
                     ord("p"): "pause", ord("g"): "gallery", ord("t"): "toolbar",
                 }.get(key)
                 if action:

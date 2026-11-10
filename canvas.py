@@ -6,7 +6,8 @@ from tkinter import filedialog
 
 from media import new_media_path
 
-BRUSH_MODES = ["SOLID", "NEON", "RAINBOW", "INK", "CALLIGRAPHY", "SPRAY", "SPARKLE", "DASHED", "ERASER"]
+# Eraser is not in the cycle; it's a separate toggle (toolbar button / `e` key).
+BRUSH_MODES = ["SOLID", "NEON", "RAINBOW", "INK", "CALLIGRAPHY", "SPRAY", "SPARKLE", "DASHED"]
 
 
 class CanvasManager:
@@ -36,7 +37,8 @@ class CanvasManager:
         self.background_image = None
 
         # Brush state configuration
-        self.brush_mode = "SOLID"  # one of BRUSH_MODES
+        self.brush_mode = "SOLID"  # one of BRUSH_MODES, or "ERASER"
+        self.last_brush = "SOLID"  # brush to return to when the eraser is toggled off
         self.dash_counter = 0
         self.rainbow_hue = 0
         self.ink_width = None
@@ -104,10 +106,53 @@ class CanvasManager:
 
     def cycle_brush_mode(self):
         """Cycles through available brush styles."""
-        idx = BRUSH_MODES.index(self.brush_mode)
-        self.brush_mode = BRUSH_MODES[(idx + 1) % len(BRUSH_MODES)]
+        if self.brush_mode == "ERASER":
+            # Leaving the eraser via the brush button: go back to the last brush
+            self.brush_mode = self.last_brush
+        else:
+            idx = BRUSH_MODES.index(self.brush_mode)
+            self.brush_mode = BRUSH_MODES[(idx + 1) % len(BRUSH_MODES)]
+        self.last_brush = self.brush_mode
         self.ink_width = None
         self.show_toast(f"BRUSH: {self.brush_mode}")
+        return self.brush_mode
+
+    def set_brush(self, mode):
+        """Picks a brush directly (from the brush menu)."""
+        self.brush_mode = self.last_brush = mode
+        self.ink_width = None
+        self.show_toast(f"BRUSH: {mode}")
+
+    def brush_preview(self, mode, color, w, h):
+        """Renders a sample wavy stroke in `mode` on a small dark tile."""
+        saved = (self.canvas, self.brush_mode, self.width, self.height,
+                 self.dash_counter, self.rainbow_hue, self.ink_width)
+        try:
+            self.canvas = np.zeros((h, w, 3), np.uint8)
+            self.width, self.height = w, h
+            self.brush_mode, self.dash_counter, self.ink_width = mode, 0, None
+            # Points get further apart along the stroke (speeding up), so INK visibly thins
+            t = np.linspace(0, 1, 40) ** 1.6
+            xs = w * (0.08 + 0.84 * t)
+            ys = h / 2 + np.sin(t * 2 * np.pi) * h * 0.28
+            pts = [(int(x), int(y)) for x, y in zip(xs, ys)]
+            for a, b in zip(pts, pts[1:]):
+                self.draw_line(a, b, color)
+            return self.canvas
+        finally:
+            (self.canvas, self.brush_mode, self.width, self.height,
+             self.dash_counter, self.rainbow_hue, self.ink_width) = saved
+
+    def toggle_eraser(self):
+        """Switches to the eraser, or back to the brush that was active before."""
+        if self.brush_mode == "ERASER":
+            self.brush_mode = self.last_brush
+            self.show_toast(f"BRUSH: {self.brush_mode}")
+        else:
+            self.last_brush = self.brush_mode
+            self.brush_mode = "ERASER"
+            self.show_toast("ERASER ON")
+        self.ink_width = None
         return self.brush_mode
 
     def preview_color(self, color):
@@ -255,26 +300,9 @@ class CanvasManager:
                     self.canvas, (cx, cy), (ax, ay), 0, 0, 360, color, 3
                 )
 
-    def apply_viewport_filter(self, frame, p1, p2, p3, p4, filter_idx):
-        """Applies real-time image filters inside a bounded quad region."""
-        pts = np.array([p1, p2, p4, p3], dtype=np.int32)
-        x, y, w, h = cv2.boundingRect(pts)
-
-        x = max(0, x)
-        y = max(0, y)
-        w = min(self.width - x, w)
-        h = min(self.height - y, h)
-
-        if w <= 0 or h <= 0:
-            return frame
-
-        roi = frame[y : y + h, x : x + w]
-        if roi.size == 0:
-            return frame
-
-        filter_mode = filter_idx % len(self.filter_names)
-        filter_name = self.filter_names[filter_mode]
-
+    def filter_image(self, roi, filter_name):
+        """Returns a filtered copy of `roi` (any size). Used for the filter box and menu previews."""
+        h, w = roi.shape[:2]
         if filter_name == "GRAYSCALE":
             filtered_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
             filtered_roi = cv2.cvtColor(filtered_roi, cv2.COLOR_GRAY2BGR)
@@ -443,6 +471,27 @@ class CanvasManager:
 
         else:
             filtered_roi = roi
+        return filtered_roi
+
+    def apply_viewport_filter(self, frame, p1, p2, p3, p4, filter_idx):
+        """Applies real-time image filters inside a bounded quad region."""
+        pts = np.array([p1, p2, p4, p3], dtype=np.int32)
+        x, y, w, h = cv2.boundingRect(pts)
+
+        x = max(0, x)
+        y = max(0, y)
+        w = min(self.width - x, w)
+        h = min(self.height - y, h)
+
+        if w <= 0 or h <= 0:
+            return frame
+
+        roi = frame[y : y + h, x : x + w]
+        if roi.size == 0:
+            return frame
+
+        filter_name = self.filter_names[filter_idx % len(self.filter_names)]
+        filtered_roi = self.filter_image(roi, filter_name)
 
         mask = np.zeros((h, w), dtype=np.uint8)
         shifted_pts = pts - np.array([x, y])
