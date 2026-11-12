@@ -57,6 +57,7 @@ class CanvasManager:
             "ASCII",
             "NIGHT_VISION",
             "KALEIDOSCOPE",
+            "GLITCH",
         ]
 
         # On-screen toast notifications
@@ -469,9 +470,39 @@ class CanvasManager:
 
             filtered_roi = cv2.remap(roi, map_x, map_y, cv2.INTER_LINEAR)
 
+        elif filter_name == "GLITCH":
+            filtered_roi = self._glitch(roi)
+
         else:
             filtered_roi = roi
         return filtered_roi
+
+    def _glitch(self, roi):
+        """Digital glitch: RGB channel split, torn horizontal slices, color-burst bands
+        and scanlines. Randomized every frame so it flickers like a broken signal."""
+        h, w = roi.shape[:2]
+        rng = self.rng
+        shift = max(2, w // 60)
+        b, g, r = cv2.split(roi)
+        # Chromatic aberration: red drifts right, blue left (wobbles a little each frame)
+        out = cv2.merge([
+            np.roll(b, -shift - int(rng.integers(0, shift + 1)), axis=1),
+            g,
+            np.roll(r, shift + int(rng.integers(0, shift + 1)), axis=1),
+        ])
+        # Tear a handful of horizontal slices sideways
+        for _ in range(int(rng.integers(3, 8))):
+            y = int(rng.integers(0, h))
+            sh = int(rng.integers(2, max(3, h // 12)))
+            out[y:y + sh] = np.roll(out[y:y + sh], int(rng.integers(-w // 8, w // 8 + 1)), axis=1)
+        # Occasional solid color-burst band, like corrupted data
+        if rng.random() < 0.5:
+            y = int(rng.integers(0, h))
+            band = out[y:y + max(2, h // 40)]
+            band[:] = np.maximum(band, np.array([255, 0, 255] if rng.random() < 0.5 else [255, 255, 0], np.uint8) // 2)
+        # Scanlines
+        out[::3] = (out[::3] * 0.7).astype(np.uint8)
+        return out
 
     def apply_viewport_filter(self, frame, p1, p2, p3, p4, filter_idx):
         """Applies real-time image filters inside a bounded quad region."""

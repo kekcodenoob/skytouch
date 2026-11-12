@@ -135,7 +135,7 @@ class SkytouchApp:
                              e = edit image, Esc = back; mouse clicks work too)
   [t] Show / Hide Toolbar
   [f] Toggle Fullscreen     (Esc also leaves fullscreen)
-  [b] Cycle Brush Style     (toolbar BRUSH / FILTER buttons open picker menus)
+  [b] Cycle Brush Style     (toolbar SHAPE / BRUSH / FILTER open preview menus)
   [e] Toggle Eraser
   [c] Clear Canvas
   [u] Upload/Prompt Background Overlay Image
@@ -151,9 +151,8 @@ class SkytouchApp:
         if action == "color":
             self.color_index = (self.color_index + 1) % len(self.colors)
             self.canvas_mgr.show_toast(f"COLOR: {self.color_names[self.color_index].upper()}")
-        elif action == "shape":
-            self.shape_index = (self.shape_index + 1) % len(self.shape_modes)
-            self.canvas_mgr.show_toast(f"SHAPE: {self.shape_modes[self.shape_index].upper()}")
+        elif action == "shape":  # toolbar: open the shape menu
+            self._toggle_menu("shape")
         elif action == "brush":  # toolbar: open the brush menu
             self._toggle_menu("brush")
         elif action == "filter":  # toolbar: open the filter menu
@@ -198,6 +197,9 @@ class SkytouchApp:
         self._cancel_pinch()
         if kind == "brush":
             self.picker.open("brush", "CHOOSE A BRUSH", BRUSH_MODES, {"CALLIGRAPHY": "CALLIG."})
+        elif kind == "shape":
+            self.picker.open("shape", "CHOOSE A SHAPE  (pinch thumb + index and drag)", self.shape_modes,
+                             {m: m.upper() for m in self.shape_modes})
         else:
             names = self.canvas_mgr.filter_names
             self.picker.open("filter", "CHOOSE A FILTER  (frame it with two L-shapes)", names, FILTER_SHORT)
@@ -211,6 +213,9 @@ class SkytouchApp:
             return
         if self.picker.kind == "brush":
             self.canvas_mgr.set_brush(choice)
+        elif self.picker.kind == "shape":
+            self.shape_index = self.shape_modes.index(choice)
+            self.canvas_mgr.show_toast(f"SHAPE: {choice.upper()}")
         elif self.picker.kind == "filter":
             idx = self.canvas_mgr.filter_names.index(choice)
             self.active_filter_index = idx
@@ -232,6 +237,8 @@ class SkytouchApp:
                 self.brush_preview_color = color
                 self.brush_previews = {m: self.canvas_mgr.brush_preview(m, color, tw, th) for m in BRUSH_MODES}
             return self.brush_previews, self.canvas_mgr.last_brush
+        if self.picker.kind == "shape":
+            return self._shape_previews(tw, th), self.shape_modes[self.shape_index]
         names = self.canvas_mgr.filter_names
         thumb = cv2.resize(frame, (tw, th), interpolation=cv2.INTER_AREA)
         if not self.filter_previews:  # first frame: render all of them once
@@ -242,6 +249,23 @@ class SkytouchApp:
         for n in todo:
             self.filter_previews[n] = self.canvas_mgr.filter_image(thumb.copy(), n)
         return self.filter_previews, self.canvas_mgr.filter_names[self.active_filter_index]
+
+    def _shape_previews(self, w, h):
+        """Each shape drawn the way a pinch-drag from the white dot to the cyan dot would make it."""
+        color = self.colors[self.color_index]
+        out = {}
+        for shape in self.shape_modes:
+            img = np.zeros((h, w, 3), np.uint8)
+            if shape == "circle":  # circle grows from the start point
+                p1, p2 = (w // 2, h // 2), (w // 2 + int(h * 0.36), h // 2 + int(h * 0.12))
+            else:
+                p1, p2 = (int(w * 0.28), int(h * 0.18)), (int(w * 0.72), int(h * 0.82))
+            cv2.line(img, p1, p2, (70, 70, 70), 1, cv2.LINE_AA)  # the drag
+            self._draw_shape_preview(img, shape, p1, p2, color)
+            cv2.circle(img, p1, 5, (255, 255, 255), -1, cv2.LINE_AA)
+            cv2.circle(img, p2, 5, ACCENT, -1, cv2.LINE_AA)
+            out[shape] = img
+        return out
 
     # ------------------------------------------------------------------ helpers
     def _hold(self, hand, hold_s, now, preview=None, color=(255, 255, 255)):

@@ -30,20 +30,41 @@ def _star(img, c, r, color, thick):
     cv2.line(img, (x - s, y + s), (x + s, y - s), color, max(1, thick // 2), cv2.LINE_AA)
 
 
+# A pointing hand in MediaPipe's 21-landmark layout (index up, other fingers folded),
+# drawn on a 1024px canvas.
+HAND = {0: (540, 910), 1: (430, 845), 2: (360, 755), 3: (330, 665), 4: (345, 585),
+        5: (460, 640), 6: (450, 500), 7: (445, 390), 8: (440, 280),
+        9: (555, 650), 10: (575, 560), 11: (550, 625), 12: (535, 680),
+        13: (640, 670), 14: (660, 590), 15: (635, 650), 16: (620, 700),
+        17: (715, 715), 18: (735, 650), 19: (712, 700), 20: (695, 735)}
+BONES = [(0, 1), (1, 2), (2, 3), (3, 4), (0, 5), (5, 6), (6, 7), (7, 8), (5, 9), (9, 10), (10, 11), (11, 12),
+         (9, 13), (13, 14), (14, 15), (15, 16), (13, 17), (17, 18), (18, 19), (19, 20), (0, 17)]
+
+
+def _hue(h):
+    hsv = np.uint8([[[int(h) % 180, 255, 255]]])
+    return tuple(int(c) for c in cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)[0, 0])
+
+
+def _glow(img, layer, sigma, gain):
+    halo = cv2.GaussianBlur(layer, (0, 0), sigma)
+    img = cv2.add(img, (halo * gain).clip(0, 255).astype(np.uint8))
+    return cv2.add(img, layer)
+
+
 def make_icon(size=256):
-    """Returns a BGRA icon: glowing gradient brush stroke ending at a fingertip,
-    on a dark rounded square."""
+    """Returns a BGRA icon: a hand-tracking skeleton whose fingertip leaves a
+    glowing rainbow trail, on a dark rounded square."""
     S = 1024  # draw large, downsample for smooth edges
     yy, xx = np.mgrid[0:S, 0:S] / S
 
-    # Background: diagonal gradient deep purple -> midnight blue
-    top = np.array([70, 18, 46], float)     # BGR
-    bot = np.array([48, 20, 12], float)
+    # Background: diagonal gradient deep blue -> plum, soft glow upper left
+    top = np.array([60, 25, 10], float)  # BGR
+    bot = np.array([30, 10, 30], float)
     t = ((xx + yy) / 2)[..., None]
-    bg = (top * (1 - t) + bot * t)
-    # soft vignette glow in the upper right
-    glow = np.exp(-(((xx - 0.72) ** 2 + (yy - 0.28) ** 2) / 0.08))[..., None]
-    bg = np.clip(bg + glow * np.array([90, 40, 70]), 0, 255).astype(np.uint8)
+    bg = top * (1 - t) + bot * t
+    glow = np.exp(-(((xx - 0.3) ** 2 + (yy - 0.25) ** 2) / 0.1))[..., None]
+    img = np.clip(bg + glow * np.array([90, 60, 20]), 0, 255).astype(np.uint8)
 
     # Rounded-square mask
     mask = np.zeros((S, S), np.uint8)
@@ -53,32 +74,33 @@ def make_icon(size=256):
     for cx, cy in [(m + r, m + r), (S - m - r, m + r), (m + r, S - m - r), (S - m - r, S - m - r)]:
         cv2.circle(mask, (cx, cy), r, 255, -1, cv2.LINE_AA)
 
-    # The stroke: a swoosh from lower-left up to a fingertip in the upper-right
-    pts = _bezier(np.array([200, 800.0]), np.array([330, 420.0]),
-                  np.array([620, 860.0]), np.array([760, 300.0]))
-    cyan, magenta = np.array([255, 230, 40.0]), np.array([230, 60, 255.0])
-    stroke = np.zeros((S, S, 3), np.uint8)
-    for i in range(len(pts) - 1):
-        f = i / (len(pts) - 1)
-        col = tuple(int(c) for c in magenta * (1 - f) + cyan * f)
-        w = int(40 + 50 * np.sin(np.pi * f) ** 0.8)  # thicker in the middle
-        cv2.line(stroke, tuple(pts[i].astype(int)), tuple(pts[i + 1].astype(int)), col, w, cv2.LINE_AA)
+    # Rainbow trail off the fingertip, tapering as it goes
+    tip = HAND[8]
+    pts = _bezier(np.array(tip, float), np.array([600, 110.0]), np.array([820, 330.0]), np.array([900, 150.0]))
+    trail = np.zeros((S, S, 3), np.uint8)
+    n = len(pts) - 1
+    for i in range(n):
+        f = i / n
+        cv2.line(trail, tuple(pts[i].astype(int)), tuple(pts[i + 1].astype(int)),
+                 _hue(90 + 90 * f), int(60 - 34 * f), cv2.LINE_AA)
+    img = _glow(img, trail, 28, 1.6)
 
-    halo = cv2.GaussianBlur(stroke, (0, 0), 38)
-    img = cv2.add(bg, (halo * 1.6).clip(0, 255).astype(np.uint8))
-    img = cv2.add(img, stroke)
+    # Hand skeleton: cream bones, pink joints, bright fingertip
+    hand = np.zeros((S, S, 3), np.uint8)
+    for a, b in BONES:
+        cv2.line(hand, HAND[a], HAND[b], (255, 230, 200), 28, cv2.LINE_AA)
+    for k, p in HAND.items():
+        if k != 8:
+            cv2.circle(hand, p, 21, (120, 80, 255), -1, cv2.LINE_AA)
+    cv2.circle(hand, tip, 44, (255, 255, 255), -1, cv2.LINE_AA)
+    img = _glow(img, hand, 14, 0.8)
 
-    # Fingertip: bright dot with a ring
-    tip = (760, 300)
+    # Fingertip ring
     ring = np.zeros_like(img)
-    cv2.circle(ring, tip, 95, (255, 240, 120), 18, cv2.LINE_AA)
-    img = cv2.add(img, cv2.GaussianBlur(ring, (0, 0), 12))
-    img = cv2.add(img, ring)
-    cv2.circle(img, tip, 52, (255, 255, 255), -1, cv2.LINE_AA)
+    cv2.circle(ring, tip, 84, (255, 230, 200), 14, cv2.LINE_AA)
+    img = _glow(img, ring, 10, 1.0)
 
-    # Sparkles
-    _star(img, (330, 250), 60, (255, 255, 255), 10)
-    _star(img, (840, 690), 38, (255, 220, 255), 7)
+    _star(img, (830, 540), 50, (255, 255, 255), 9)
 
     bgra = cv2.cvtColor(img, cv2.COLOR_BGR2BGRA)
     bgra[:, :, 3] = mask
